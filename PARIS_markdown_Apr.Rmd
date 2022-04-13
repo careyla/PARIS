@@ -1,0 +1,2525 @@
+---
+title: "PARIS"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+
+```
+
+
+## R Markdown analysis of PARIS dataset
+
+```{r, echo = FALSE}
+#load packages ----
+library(janitor)
+library(dplyr)
+library(tidyverse)
+library(purrr)
+library(tidyr)
+#library(gapminder)
+library(lubridate)
+library(here)
+#library(archivist)
+library(useful)
+library(ggplot2)
+#library(gtsummary)
+#library(gt)
+library(kableExtra)
+library(labelled)
+library(survival)
+library(survminer)
+#library(caTools)
+library(mice)
+library(caret)
+library(rms) 
+#library(pmsampsize)
+#library(splines2)
+#library(brms)
+#library(devtools)
+library(blantyreSepsis)
+#library(bayesplot)
+#library(wBoot)
+library(viridis)
+#library(finalfit)
+library(pheatmap)
+#library(factoextra)
+#library(patchwork)
+#library(oddsratio)
+#library(tableone)
+#library(magrittr)
+#library(sjPlot)
+#library(sjlabelled)
+#library(sjmisc)
+#library(questionr)
+library(splines)
+library(nephro)
+#library(ROCR)
+library(forestplot)
+library(pROC)
+library(rstatix)
+library(logbin)
+library(bootComb)
+
+
+
+
+# flag for savingfigures
+write_figs <- FALSE
+if (write_figs) {
+  dir.create(here("figures"))
+  dir.create(here("figures/upset_fig_files"))
+}
+
+#rounding for dataframes
+round_df <- function(x, digits) {
+    # round all numeric variables
+    # x: data frame 
+    # digits: number of digits to round
+    numeric_columns <- sapply(x, mode) == 'numeric'
+    x[numeric_columns] <-  round(x[numeric_columns], digits)
+    x
+}
+
+```
+
+
+```{r, results='hide'}
+#link all the istat data in one df####
+paths<-dir("raw_data", pattern = "\\.csv$",full.names = TRUE)
+names(paths) <- basename(paths)
+raw_data <- map_dfr(paths, read.csv,stringsAsFactors = FALSE, .id = "filename")
+
+#tidy up####
+raw_data<-janitor::remove_empty(raw_data, which = "rows")
+raw_data<-janitor::remove_empty(raw_data, which = "cols")
+raw_data <- raw_data %>% 
+  select(filename,X.1,X.10,X.16) %>%
+  filter(X.1 != "", X.1 != "DOB:", X.1 != "Device Model:", 
+         X.1 != "Upload Time:", X.1 != "Specimen Type:", 
+         X.1 != "Instrument Comment:", X.1 != "Report Created By:",
+         X.1 != "admin") %>%
+  mutate(values = ifelse(X.16 != "", X.16, X.10)) %>%
+  select(X.1, values)%>%
+  tibble::rowid_to_column("ID") %>%
+  spread(X.1,values,fill=NA,convert=FALSE,drop=TRUE,sep=NULL) %>%
+  rename("Gender:","Time"="Gender:")%>%
+  select(-Test) %>%
+  relocate(Time,.before=AnGap) %>%
+  clean_names() %>%
+  relocate(patient_name,.before=time)
+
+shift.column(raw_data,'time',newNames = sprintf("Time",'time'),
+             len=1L, up = TRUE)
+
+raw_data<-shift.column(raw_data,"time",newNames = sprintf("clock","time"),
+                       len = 1L,up=TRUE)%>%
+  select(-time) %>%
+  relocate(clock,.before=an_gap)
+
+j <- 0
+for(i in seq(1,length(raw_data$id))){
+  if(is.na(raw_data[i, "patient_name"]))
+  {
+    raw_data[i, "id"] <- j
+  }else {
+    j <- j + 1
+    raw_data[i, "id"] <- j
+  }
+}
+```
+
+
+```{r, results='hide'}
+raw_data <- raw_data %>%
+  mutate(k = if_else(k =="    >9.0", "9.0", k),
+         na = if_else(na =="    >140", "140", na),
+         hct = if_else(hct =="    <15", "15", hct),
+         cl = if_else(cl =="   >140", "140", cl),
+         bun = if_else(bun =="    >140", "140", bun),
+         tco2 = if_else(tco2 =="    >50", "50", tco2))
+```
+
+
+```{r, results='hide'}
+raw_data <- raw_data %>%
+  mutate(an_gap = as.numeric(trimws(an_gap)),
+         bun = as.numeric(trimws(bun)),
+         cl = as.numeric(trimws(cl)),
+         crea = as.numeric(trimws(crea)),
+         glu = as.numeric(trimws(glu)),
+         hb = as.numeric(trimws(hb)),
+         hct = as.numeric(trimws(hct)),
+         i_ca = as.numeric(trimws(i_ca)),
+         k = as.numeric(trimws(k)),
+         na = as.numeric(trimws(na)),
+         tco2 = as.numeric(trimws(tco2)))
+
+list <- c(colnames(raw_data))
+for(z in seq(1: max(raw_data$id))){
+  y <- raw_data %>% filter(id == z)
+  x <- y[,4:14]
+  w <- data.frame(c(y[1,1], y[1,2], y[1,3], colMeans(x, na.rm = TRUE)))
+  #print(w)
+  list <- cbind(list, w)
+  #print(t)
+}
+
+raw_data <- data.frame(t(list))
+
+rownames(raw_data) <- NULL
+colnames(raw_data) <- raw_data[1,]
+raw_data <- raw_data[-1,]
+```
+
+
+```{r, results='hide'}
+#transform data/compute new numeric variables/logical variables ----
+raw_data<-raw_data %>% 
+  mutate(clock=dmy_hm(clock)) %>%
+  mutate(patient_name = (sub("PAR_","",raw_data$patient_name))) 
+
+raw_data<-raw_data %>%
+  mutate(patient_name = (sub("PAR","",raw_data$patient_name)))
+                         
+
+raw_data <- raw_data %>%
+  mutate(an_gap = as.numeric(trimws(an_gap)),
+         bun = as.numeric(trimws(bun)),
+         cl = as.numeric(trimws(cl)),
+         crea = as.numeric(trimws(crea)),
+         glu = as.numeric(trimws(glu)),
+         hb = as.numeric(trimws(hb)),
+         hct = as.numeric(trimws(hct)),
+         i_ca = as.numeric(trimws(i_ca)),
+         k = as.numeric(trimws(k)),
+         na = as.numeric(trimws(na)),
+         tco2 = as.numeric(trimws(tco2)))
+
+
+list <- c(colnames(raw_data))
+for(z in seq(1: max(raw_data$id))){
+  y <- raw_data %>% filter(id == z)
+  x <- y[,4:14]
+  w <- data.frame(c(y[1,1], y[1,2], y[1,3], colMeans(x, na.rm = TRUE)))
+  #print(w)
+  list <- cbind(list, w)
+  #print(t)
+}
+
+#create time stamps####
+raw_data<-raw_data %>%
+  rename(pid=patient_name) %>%
+  group_by(pid) %>%
+  mutate(timepoint = difftime(clock, min(clock), units = "hours")) %>%
+  mutate(
+    timepoint.cat = case_when(
+      timepoint == min(timepoint) ~ "0h",
+      timepoint >= 0.1 & timepoint < 950 ~"48h",
+      timepoint == max(timepoint) ~ "3months"
+    ))
+
+raw_data<-raw_data %>% mutate(
+  timepoint.cat=factor(timepoint.cat,
+                       levels=c("0h", "48h","3months"),
+                       labels=c("0h", "48h", "3months")))
+
+
+raw_data<-raw_data[-c(57),]
+```
+
+
+```{r, results='hide'}
+#remove the empty rows
+#slice row 57, row 120 needs a timepoint - should be x2 10599 0h and 3 months, row 149 : 10581 needs 48h stamp
+
+```
+
+### Read in the datasets and prepare the data
+
+```{r, results= 'hide'}
+baseline<-read_csv(here("bl_data","baseline_par_raw.csv"))
+ri<-read_csv(here("bl_data","paris_ri.csv"))
+fortyfup<-read_csv(here("bl_data","fup_par_48hr.csv"))
+daily<-read_csv(here("bl_data","daily_par.csv"))
+fup<-read_csv(here("bl_data","followup_par.csv"))
+#surv_data<-read_csv(here("bl_data","PARIS_surv_3m.csv"))
+
+surv<-read_csv(here("bl_data","km_2.csv")) 
+
+m3<-raw_data %>% filter(timepoint.cat=='3months')
+
+```
+
+
+
+```{r}
+#get inpatient PITC result
+pitc<-fup %>% select(pid, hiv_test_result) %>%
+  mutate(pitc=hiv_test_result) %>%
+  select(-hiv_test_result) %>%
+  mutate(pid=(sub("PAR_","",fup$pid)))
+
+```
+
+
+```{r}
+#get urine protein results from daily
+prot<-daily %>% select(pid, urineprot, urinepu) %>% 
+  mutate(pid=(sub("PAR_","",daily$pid)))
+
+write_csv(prot,here("prot.csv"))
+```
+
+
+```{r, results = 'hide'}
+#clean the RI dataset
+ridata<-ri %>% select(pid,`Echogenicity of right kidney in kidney/liver view`,`Echogenicity of left kidney`,`Size of right kidney (cm)`, `Size of left kidney (cm)`,
+              `Corticomedullary differentiation of right kidney`,`Corticomedullary differentiation of left kidney`,`Quality of views`,`Quality of view`,
+              `Left RRI calculation 1 upper pole`,`Left RRI calculation 3 lower pole`,`Left RRI calculation 2 middle pole`,`Right RRI calculation 2 middle`,`Right RRI calculation 1 upper pole`,`Right RRI calculation 3 lower pole`,Hydronephrosis,Hydronephrosis_1)
+
+ridata<-ridata %>% rename(left_qual=`Quality of view`,right_qual=`Quality of views`,right_hydro=Hydronephrosis,left_hydro=Hydronephrosis_1)
+
+ridata<-ridata %>%
+  mutate(pid=(sub("PAR_","",ridata$pid)))
+
+ridata<-ridata %>%
+  mutate(pid=(sub("PAR-","",ridata$pid)))
+```
+
+
+```{r, results='hide'}
+#clean baseline dataset
+bas<-baseline %>%
+  select(data_date,pid,age,sex,travel_costt,unwell_period_n,unwell_period,walking,walking_new,immobile_period,
+         immobile_period_n,sx_fever,sx_cough,sx_cp,sx_headach,sx_neckstiff,sx_myalgia,sx_sweat,sx_confusion,
+         sx_nausea,sx_vomiting,sx_diarrhoea,sx_abdoswell,sx_abdopain,sx_pv,sx_urine,sx_swallow,sx_anorexia,
+         sx_concentrate,sx_oedema,sx_conjun,sx_rash,sx_ulcer,sx_lymph,sx_bleeding,sx_dyspnoea,sx_dyspnoea_orthop,
+         sx_cp_position,sx_cp_pleuritic,sx_cp_positional,sx_cp_exertional,sx_cough_sputum,sx_cough_blood,
+         sx_abdopain_position, sx_abdopain_position_ref,hiv_test,hiv_test_result,cot,art,inh,art_regimen,
+         cd4,vl,tb_rx,dx_cancer,dx_diabetes,dx_lung, dx_heart, dx_hypertension, dx_palliative, dx_heart_irreg,
+         dx_kidney, dx_liver, dx_stroke, abx_prior, prior_mal,rx_other_sweep1,rx_other_sweep2,rx_other_sweep_txt, pregnancy,
+         smoker, food_insecurity,alcohol, bp_sys,bp_dia,hr,temp,rr, spo2,o2_source, o2_flow, gcs_eyes,gcs_verbal,
+         gcs_motor,speech,stand, sx_thirst,caprefill,extremities,eyessunken,mucousdry,skinturgor,ivi1_enter,
+         pressor1,pressor2,pressor3,pressor4,pressor5,pressor6,pass_urine,urine_time,change_urine,catheter,catheter_vol,
+         muac,ulnar_l,ul,c_height,weight,leukocyte,nitrite,urob,protein,ph,blood,specgrav,ketone,biri,glucose)
+
+
+bas<-bas %>%
+  mutate(data_date=ymd_hms(data_date)) %>%
+  mutate(pid = (sub("PAR_","",bas$pid)))
+
+#Calculate BMI 
+bas<-bas %>% mutate(bmi=weight/(c_height)^2)
+
+#get duration of time
+bas<-bas %>% unite("delay",unwell_period_n:unwell_period, sep="", remove=FALSE)
+bas<-bas %>% mutate(delay=as.duration(delay)) %>%
+  mutate(days_unwell=as.numeric(delay,"days"))
+
+#get immobile period
+bas<-bas %>% unite("immobile",immobile_period_n:immobile_period, sep="", remove=FALSE)
+bas<-bas %>% mutate(immobile=as.duration(immobile)) %>%
+  mutate(immobile=as.numeric(immobile,"days"))
+
+bas<-bas %>% mutate(gcs_eyes=(sub("gcs_eyes_","",bas$gcs_eyes)))
+bas<-bas %>% mutate(gcs_verbal=(sub("gcs_verbal_","",bas$gcs_verbal)))
+bas<-bas %>% mutate(gcs_motor=(sub("gcs_motor_","",bas$gcs_motor)))
+
+i<-c(84:86)
+bas[,i]<-apply(bas[ ,i],2,
+                     function(x) as.numeric(as.integer(x)))
+
+bas<-bas %>% mutate(GCS=gcs_eyes+gcs_verbal+gcs_motor)
+```
+
+```{r, results='hide'}
+#Calculate a qSOFA score
+bas<-bas %>% mutate(qSOFA_SBP=ifelse(bp_sys<=100,"1","0"),
+               qSOFA_RR=ifelse(rr>=22,"1","0"),
+               qSOFA_GCS=ifelse(GCS<=15,"1","0"))
+
+i<-c(124:127)
+bas[,i]<-apply(bas[ ,i],2,
+                     function(x) as.numeric(as.integer(x)))
+
+
+bas<-bas %>% mutate(qSOFA=qSOFA_SBP+qSOFA_RR+qSOFA_GCS)
+
+#add PITC result
+
+bas<-bas %>% left_join(pitc, by="pid")
+p<-bas %>% select(pid, hiv_test_result,pitc) %>%
+  mutate(hiv_test_result=if_else(is.na(hiv_test_result),pitc,hiv_test_result)) %>%
+  select(-pitc)
+
+bas<-bas %>% select(-hiv_test_result)
+
+bas<-bas %>% left_join(p, by="pid")
+
+missing_hiv<-bas %>% filter(is.na(hiv_test_result)) %>%
+  select(pid, hiv_test_result)
+
+write_csv(missing_hiv,here("missing_hiv.csv"))
+```
+
+
+```{r, results='hide'}
+#Labels
+bas<-bas %>% mutate_at(c("walking","walking_new","sx_fever","sx_cough","sx_cp","sx_headach","sx_neckstiff","sx_myalgia","sx_sweat","sx_confusion","sx_nausea",
+                    "sx_vomiting","sx_diarrhoea","sx_abdoswell","sx_abdopain","sx_pv","sx_urine","sx_swallow","sx_anorexia","sx_concentrate","sx_oedema","sx_conjun","sx_rash",
+                    "sx_ulcer","sx_lymph","sx_bleeding","sx_dyspnoea_orthop","sx_cp_position","sx_cp_pleuritic","sx_cp_positional","sx_cp_exertional","sx_cough_sputum",
+                    "sx_cough_blood","sx_abdopain_position","sx_abdopain_position_ref","hiv_test","cot","art","inh","tb_rx","dx_cancer","dx_diabetes","dx_lung","dx_heart","dx_hypertension",
+                    "dx_palliative", "dx_heart_irreg","dx_kidney","dx_liver","dx_stroke","abx_prior","prior_mal","rx_other_sweep1","rx_other_sweep2","pregnancy","smoker","food_insecurity",
+                    "alcohol","eyessunken","ivi1_enter","pressor1","pressor2","pressor3","pressor4","pressor5","pressor6","pass_urine","catheter"),
+                  function(x) ifelse(x==1,"Yes","No"))
+
+bas$sx_dyspnoea<-factor(bas$sx_dyspnoea,
+                        levels=c("none","borg_1","borg_2","borg_3","borg_4","borg_5"),
+                        labels=c("None","very slight","slight","moderate","moderate-severe",
+                                 "severe"))
+
+bas$leukocyte<-factor(bas$leukocyte,
+                      levels=c(1,2,3,4,5),
+                      labels=c("Negative","Trace","+","++","+++"))
+bas$nitrite<-factor(bas$nitrite,
+                    levels=c(1,2),
+                    labels=c("Positive","Negative"))
+bas$urob<-factor(bas$urob,
+                 levels=c(1,2,3,4,5),
+                 labels=c("0.2","1","2","4","6"))
+bas$protein<-factor(bas$protein,
+                    levels=c(1,2,3,4,5,6),
+                    labels=c("Negative","Trace","+","++","+++","++++"))
+bas$ph<-factor(bas$ph,
+               levels=c(1,2,3,4,5,6,7),
+               labels=c("5.0","6.0","6.5","7.0","7.5","8.0","8.5"))
+bas$blood<-factor(bas$blood,
+                  levels=c(1,2,3,4,5,6,7),
+                  labels=c("Negative","Trace","Moderate","Haemolysed Trace","+","++","+++"))
+bas$specgrav<-factor(bas$specgrav,
+                    levels=c(1,2,3,4,5,6,7),
+                    labels=c("1.000","1.005","1.010","1.015","1.020","1.025","1.030"))
+bas$ketone<-factor(bas$ketone,
+                   levels=c(1,2,3,4,5,6),
+                   labels=c("Negative","Trace 5","Small 15","Moderate 40","Large 80","Large 160"))
+bas$biri<-factor(bas$biri,
+                 levels=c(1,2,3,4),
+                 labels=c("Negative","+","++","+++"))
+bas$glucose<-factor(bas$glucose,
+                    levels=c(1,2,3,4,5,6),
+                    labels = c("Negative","100","250","500","1000","2000"))
+
+bas$art_regimen<-factor(bas$art_regimen,
+                        levels=c("regimen13", "regimem15", "regimen5"),
+                        labels=c("TDF/3TC/DTG","ABC/3TC+/DTG","TDF/3TC/EFV"))
+
+bas$dx_kidney<-factor(bas$dx_kidney,
+                      levels=c("No","Yes"),
+                      labels=c("No","Yes"))
+
+
+```
+
+```{r}
+#turn microscopic haematuria into a binary variable
+bas<-bas %>% mutate(blood=if_else(blood!="Negative","Yes","No"))
+
+```
+
+
+```{r, results='hide'}
+#Join baseline data with biochemistry data
+full<-bas %>% left_join(raw_data,by="pid")
+full<-full %>% left_join(ridata, by="pid")
+
+#creat one RI column
+
+full<-full %>% mutate(LRI=(`Left RRI calculation 1 upper pole`+`Left RRI calculation 3 lower pole`+`Left RRI calculation 2 middle pole`)/3)
+full<-full %>% mutate(RRI=(`Right RRI calculation 1 upper pole`+`Right RRI calculation 3 lower pole`+`Right RRI calculation 2 middle`)/3)
+
+#create a composite RI
+full<-full %>% mutate(RI=(LRI+RRI)/2)
+
+#get data in the right format
+full<-full %>% mutate_if(is.character,as.factor)
+
+#add estimated SCr
+full<- full %>%
+  mutate(estSCr=case_when(sex=='male' & age >=15 & age <30 ~ "1.5",
+                          sex=='male' & age >=30 & age <40 ~ "1.4",
+                          sex=='male' & age >=40 & age <=65 ~ "1.3",
+                          sex=='male' & age > 65 ~ "1.2",
+                          sex=='female' & age >=15 & age <25 ~ "1.2",
+                          sex=='female' & age >=25 & age <40 ~ "1.1",
+                          sex=='female' & age >=40 & age <=65 ~ "1.0",
+                          sex=='female' & age > 65 ~ "0.9")) 
+
+full<-full %>% mutate(estSCr = as.numeric (estSCr))
+
+
+#sort some other predictor variables
+full<-full %>% mutate(kidneysize=(`Size of right kidney (cm)`+`Size of left kidney (cm)`)/2)
+full<-full %>% mutate(pulsepressure=(bp_sys-bp_dia))
+full<-full %>% mutate(dsratio=(bp_dia/bp_sys))
+
+
+#create a composite proteinuria
+full<-full %>% mutate(proteinuria=if_else(protein=="+" | protein=="++" | protein=="+++","Positive","Negative")) %>%
+                      mutate(proteinuria=as.factor(proteinuria)) 
+
+#get hydronephrosis, corticomedullary differentiation variables
+full<-full %>% mutate(hydronephrosis=if_else(right_hydro=="Mild" | left_hydro=="Mild" | right_hydro=="Severe" | left_hydro=="Severe","Yes","No"))
+full<-full %>% mutate(losscmd=if_else(`Corticomedullary differentiation of left kidney`=="Loss of corticomedullary differentiation" |`Corticomedullary differentiation of right kidney`=="Loss of corticomedullary differentiation","Yes","No"))
+full<-full %>% mutate(inc_echogenicity=if_else(`Echogenicity of left kidney`=="Increased" | `Echogenicity of right kidney in kidney/liver view` =="Increased","Yes","No"))
+
+#add proteinuria
+full<-full %>% left_join(prot, by="pid")
+
+#replace the NA values with 0
+full$urineprot[is.na(full$urineprot)]<-0
+
+
+```
+
+
+### Get Cr values for each timepoint
+
+```{r}
+crs<-read.csv(here("bl_data","cr_values.csv")) %>% mutate(pid=as.character(pid))
+
+```
+
+
+```{r}
+
+#get data set of 101 at 0h
+bfull<-full %>% filter(timepoint.cat=="0h") %>%
+  #get rid of duplicates
+distinct(pid,.keep_all=TRUE)
+
+
+bfull<-bfull %>% left_join (crs,by="pid") 
+#bfull<-bfull %>% mutate(CKD=case_when(cr_3m<1.5*crea ~ "Resolved",
+#                                             cr_3m>=1.5*crea ~ "CKD")
+
+
+#get the final factors
+bfull$hydronephrosis<-factor(bfull$hydronephrosis)
+bfull$losscmd<-factor(bfull$losscmd)
+bfull$inc_echogenicity<-factor(bfull$inc_echogenicity)      
+```
+
+We need better ways of estimating baseline creatinine, given this is a young population with low BMI - using eGFR of 75 is likely to under detect AKI in this cohort, most expected to have normal or near normal GFR at baseline. 
+
+assume eGFR of 100 would be more accurate but lets look at both methods
+
+
+```{r}
+b<-bfull %>% select(crea, sex, age, weight, cr_48h, cr_3m) %>%
+  mutate(Sex=if_else(sex=="female", 0.742, 1),
+         sex=if_else(sex=="female", 0, 1),
+         ethnicity=0) %>%
+  rename(creatinine = crea) 
+  
+
+#get different estimated baseline creatinines for different eGFR thresholds
+b<- b %>% mutate(esCr = (100/(Sex * 186 * age^-0.203))^-(1/1.154),
+                 esCr2 = (75/(Sex * 186 * age^-0.203))^-(1/1.154))
+
+
+#get AKI stages for the different thresholds of GFR
+b<-b %>% mutate(estAKI=case_when(creatinine>=1.5*esCr & creatinine<2*esCr ~"1",
+                                creatinine>=2*esCr & creatinine<3*esCr ~ "2",
+                                creatinine>=3*esCr ~ "3",
+                                creatinine<1.5*esCr ~ "no"))
+
+b<-b %>% mutate(estAKI2=case_when(creatinine>=1.5*esCr2 & creatinine<2*esCr2 ~"1",
+                                creatinine>=2*esCr2 & creatinine<3*esCr2 ~ "2",
+                                creatinine>=3*esCr2 ~ "3", 
+                                creatinine<1.5*esCr2 ~ "no"))
+
+#get definitive AKI
+b<-b %>% mutate(AKI = case_when(estAKI == "1" | estAKI == "2" | estAKI == "3" ~ "yes",
+                          estAKI == "no" ~"no"))
+
+b<-b %>% mutate(stage = as.factor(estAKI))
+
+#get the second (and unused definition of AKI)
+b<-b %>% mutate(AKI75 = if_else(estAKI2 == "1" | estAKI2 == "2" | estAKI2 == "3",
+             true = "yes", false = "no"))
+
+#check for AKI recovery at 48h
+b<-b %>% mutate(recovered=case_when(AKI == "yes" & cr_48h>=1.5*esCr ~"no",
+                                AKI == "yes"  & cr_48h<1.5*esCr ~"partial",
+                                AKI == "yes"  & cr_48h<1.15*esCr ~ "fully"))
+
+#check for incident AKI - so new AKI at 48h not present at baseline
+b<-b %>% mutate(incident = if_else(cr_48h>=1.5*esCr,"yes","no"),
+                incidentAKI = if_else(AKI=="no" & incident == "yes", "yes", "no"))
+
+newAKI<-b %>%
+  mutate(eGFR = MDRD4(creatinine, sex, age, ethnicity, method = "other"),
+         CrCl = CG(creatinine,sex, age, weight),
+         MDRD_3m = MDRD4(cr_3m, sex, age, ethnicity, method="other"),
+         CKDEPI_3m = CKDEpi.creat(cr_3m, sex, age, ethnicity),
+         eGFR_3m = MDRD4(cr_3m, sex, age, ethnicity, method="other")) %>%
+   mutate(PKD=if_else(AKI=="yes" & cr_3m >=1.5*esCr, "yes","no"),
+          CKD=if_else(eGFR_3m<60, "yes","no"))
+
+newAKI<-newAKI %>% select(eGFR,CrCl, AKI, stage, AKI75, CKD, estAKI, PKD, recovered, incidentAKI)
+
+bfull<-bfull %>% cbind(newAKI)
+
+alive<-surv %>% select(alive_48h, alive) 
+bfull<-bfull %>% cbind(alive) 
+```
+
+
+```{r}
+var_label(bfull)<-list(
+  sex="Sex",
+  smoker="Smoking",
+  alcohol="Alcohol use",
+  hiv_test_result="HIV status",
+  food_insecurity="Food insecurity",
+  dx_hypertension="Hypertension",
+  dx_diabetes="Known Diabetes",
+  tb_rx="Previously received TB treatment",
+  hiv_test_result= "HIV Status",
+  dx_cancer="Cancer diagnosis",
+  dx_lung="Lung diagnosis",
+  dx_heart="Known heart condition",
+  dx_hypertension="Known Hypertension",
+  dx_palliative="Palliative diagnosis",
+  dx_heart_irreg="Irregular heartbeat",
+  dx_kidney="Known renal disease",
+  dx_liver="Liver diagnosis",
+  dx_stroke="Stroke",
+  sx_fever="Fever",
+  sx_cough="Cough",
+  sx_cp="Chest pain",
+  sx_headach="Headache",
+  sx_neckstiff="Neck stiffness",
+  sx_myalgia="Myalgia",
+  sx_sweat="Sweat",
+  sx_confusion="Confusion",
+  sx_nausea="Nausea",
+  sx_vomiting="Vomiting",
+  sx_diarrhoea="Diarrhoea",
+  sx_abdoswell="Abdominal Swelling",
+  sx_abdopain="Abdominal Pain",
+  sx_pv="Vaginal discharge",
+  sx_urine="Urinary symptoms",
+  sx_swallow="Dsyphagia",
+  sx_anorexia="Anorexia",
+  sx_concentrate="Concentration",
+  sx_oedema="Oedema",
+  sx_conjun="Conjunctivitis",
+  sx_rash= "Rash",
+  sx_ulcer="Skin ulcers",
+  sx_lymph="Lymphadenopathy",
+  sx_bleeding="Haemorrhage",
+  sx_dyspnoea="Dyspnoea",
+  sx_dyspnoea_orthop="Orthopnoea",
+  sx_cough_sputum="Productive cough",
+  sx_cough_blood="Haemoptysis",
+  art="Taking ART",
+  art_regimen="ART Regimen",
+  cot="Taking Cotrimoxazole",
+  inh="Taking Isaniazid",
+  age="Age",
+  bmi="Body Mass Index (BMI)",
+  bp_sys="Systolic blood pressure",
+  bp_dia="Diastolic blood pressure",
+  hr="Heart rate",
+  temp="Temperature",
+  rr="Respiratory Rate",
+  spo2="Oxygen saturations",
+  o2_source="Oxygen source",
+  o2_flow="Oxygen flow",
+  ivi1_enter="Receiving IV fluid",
+  vl="Viral load",
+  cd4="CD4 count",
+  walking="Able to walk",
+  immobile="Duration of immobility",
+  days_unwell="Days unwell",
+  eyessunken="Sunken eyes",
+  mucousdry="Dry mucosae",
+  skinturgor="Reduced skin turgor",
+  muac="MUAC",
+  caprefill="Capillary refill",
+  pass_urine="Able to pass urine",
+  urine_time="Time last passed urine",
+  change_urine="Change in urine output",
+  pressor1="Adrenaline",
+  pressor2="Noradrenaline",
+  pressor3="Dobutamine",
+  pressor4="Dopamine",
+  pressor5="Ephedrine",
+  pressor6="Other vasopressor",
+  protein="Urinary protein",
+  blood="Microscopic haematuria",
+  crea="Creatinine",
+  right_hydro="Right hydronephrosis",
+  left_hydro="Left hydronephrosis",
+  LRI="Left Resistive Index",
+  RRI="Right Resistive Index",
+  walking_new="Walking independently before illness",
+  hiv_test="Ever had HIV test",
+  abx_prior="Antibiotic use in past month",
+  prior_mal="Malaria treatment in past month",
+  rx_other_sweep1="Other medications from pharmacy",
+  rx_other_sweep_txt="Other medications/herbal",
+  catheter="Urinary catheter", 
+  walking="Able to walk",
+  stage="AKI stage at baseline",
+  kidneysize="Renal size (cm)",
+  hydronephrosis="Hydronephrosis",
+  losscmd="Loss of corticomedullary differentiation",
+  inc_echogenicity="Increased echogenicity",
+  urineprot="Urine protein (mg/dl)",
+  blood="Microscopic haematuria",
+  eGFR="eGFR using MDRD",
+  CrCl="Creatinine Clearance")
+```
+
+
+### Demographics of included patients
+
+Interestingly, really low % of in-hospital/hospital acquired AKI, defined by AKI at 48h (jump in sCr between admission cr and
+cr at 48h). Limitation is alot of missing 48h sCr results - working on this with Sylvester and Bright as we think they have the data, just needs to be located and sent across to me. 
+
+Table 1 participants 
+```{r}
+
+bfull %>%  
+  select(
+    age,
+    sex,
+    bmi,
+    hiv_test_result,
+    art,
+    cot,
+    inh,
+    tb_rx,
+    prior_mal,
+    dx_diabetes,
+    dx_hypertension, 
+    dx_kidney,
+    abx_prior,
+    rx_other_sweep1,
+    sx_vomiting,
+    sx_diarrhoea,
+    sx_cough
+    ) %>% 
+  do(pretty_tbl_df(., confint = FALSE)) %>%
+  filter(!levels %in% c("No",
+                        "no",
+                        "0",
+                        "female",
+                        "negative",
+                        "No AKI",
+                        "Stage 1",
+                        "Stage 2",
+                        "independent",
+                        "Negative",
+                        "Resolved")) %>%
+  mutate(levels = case_when(
+    variable == "age" ~ "Age (years), median (IQR)",
+    variable == "sex" ~ "Male sex n/N (%)",
+    variable =="bmi" ~ "BMI, median (IQR)",
+    variable == "hiv_test_result" ~ "HIV infected*, n/N (%)",
+    variable == "art" ~ "Receiving antiretroviral therapy†, n/N (%)",
+    variable == "cot" ~ 
+      "Receiving co-trimoxazole preventative therapy†, n/N (%)",
+    variable == "inh" ~ 
+      "Receiving isoniazid preventative therapy†, n/N (%)",
+    variable == "tb_rx" ~ "History of receiving TB treatment, n/N (%)",
+    variable == "rx_other_sweep1" ~ "Traditional/OTC medications n/N (%)",
+    variable == "sx_vomiting" ~"Vomiting n/N (%)",
+    variable == "sx_diarrhoea" ~ "Diarrhoea n/N (%)",
+    variable == "sx_cough" ~ "Cough n/N (%)",
+   variable == "dx_diabetes" ~ "Diagnosis of Diabetes n/N (%)",
+   variable == "dx_hypertension" ~ "Diagnosis of Hypertension n/N (%)",
+   variable == "dx_kidney" ~ "Diagnosis of CKD n/N (%)",
+   variable == "abx_prior" ~ "Antibiotic use prior n/N (%)",
+   variable == "prior_mal" ~ "Prior Malaria n/N (%)",
+  
+         TRUE ~ levels),
+  
+        variable = case_when(
+      variable %in% c("age",
+                      "sex",
+                      "bmi"
+                      ) ~ "Demographics",
+      variable %in% c("hiv_test_result",
+                      "art",
+                      "inh",
+                      "cot",
+                      "tb_rx",
+                       "prior_mal"
+                      ) ~ "HIV/TB/Malaria",
+      variable %in% c("dx_diabetes",
+                       "dx_hypertension",
+                      "dx_kidney") ~ "Comorbidities",
+      variable %in% c("abx_prior",
+                      "rx_other_sweep1") ~ "Drugs",
+      variable %in% c("sx_vomiting",
+                      "sx_diarrhoea",
+                      "sx_cough") ~ "Symptoms",
+     
+    )) -> T1
+
+  
+  T1 %>%
+  select(-variable) %>%
+  kbl(col.names = c("Variable", "Value"),
+   caption = "TABLE 1: Baseline characteristics of included participants") %>%
+  kable_classic(full_width = FALSE) %>%
+  pack_rows(index = make_kable_rowgroup_string(T1, variable)) %>%
+footnote(symbol  = c("HIV status missing for 16 participants",
+                     "ART/co-trim/isoniazid status missing for 1 participant"
+                     )) 
+
+  
+  write_csv(T1, "Baselinechar.csv")
+```
+
+
+```{r}
+
+bfull$stage <- factor(bfull$stage, levels=c("1", "2","3"),
+                     labels=c("1","2","3"))
+
+bfull %>% mutate(
+  gcs_lessthan_15 = if_else(GCS < 15, true =  "yes", false = "no"),
+    alive = if_else(alive == 1, true = "yes", false = "no"),
+    alive_48h = if_else(alive_48h == 1, true = "yes", false = "no"),
+    ustand = if_else(stand == "independent" |stand == "difficult", true = "no", false = "yes"),
+    stage3 = if_else(stage==3, true ="yes", false = "no"),
+    stage2 = if_else(stage==2, true ="yes", false = "no"),
+    stage1 = if_else(stage==1, true ="yes", false = "no")
+) %>%
+  select(
+kidneysize,
+    hydronephrosis,
+    losscmd,
+    inc_echogenicity,
+    RI,
+    pass_urine,
+    proteinuria,
+    urineprot,
+    blood,
+    bp_sys,
+    bp_dia,
+    hr,
+    temp,
+    spo2,
+    rr,
+    gcs_lessthan_15, 
+    ustand,
+    days_unwell,
+    ivi1_enter,
+    qSOFA,
+    hb,
+    bun,
+    cl, 
+    na,
+    k, 
+    tco2,
+    crea, 
+    an_gap,
+    eGFR,
+    CrCl,
+    AKI,
+    AKI75,
+    stage3,
+    stage2,
+    stage1,
+  incidentAKI,
+    alive_48h,
+    alive,
+  recovered,
+    CKD) %>% 
+  do(pretty_tbl_df(.,
+                   vars_to_specify_rounding = c(
+                     "hb" = 1,
+                     "k" = 1,
+                     "urineprot" = 1,
+                     "days_unwell" = 1,
+                     "qSOFA" = 1,
+                     "RI" = 2,
+                     "crea" = 2),
+                   confint = FALSE)) %>%
+  filter(!levels %in% c("No",
+                        "no",
+                        "0",
+                        "female",
+                        "negative",
+                        "No AKI",
+                        "independent",
+                        "Negative",
+                        "Resolved")) %>%
+  mutate(levels=case_when(
+variable == "kidneysize" ~ "Kidney Size (cm), median (IQR)",
+  variable == "hydronephrosis" ~ "Hydronephrosis*  n/N (%)",
+  variable == "losscmd" ~ "Loss of corticomedullary differentiation*  n/N (%)",
+  variable ==  "inc_echogenicity" ~ "Increased echogenicity†  n/N (%)",
+  variable == "RI" ~ "Renal Resistive Index, median (IQR)",
+  variable == "pass_urine" ~ "Able to pass urine n/N (%)",
+   variable == "proteinuria" ~ "Proteinuria on dipstick n/N (%)",
+  variable == "urineprot" ~ "Proteinuria (mg/dL), median (IQR)",
+  variable == "blood" ~ "Microscopic Haematuria n/N (%)",
+   variable == "temp" ~ "Temperature (C), median (IQR)",
+    variable == "hr" ~ "Heart rate (beats/min), median (IQR)",
+    variable == "rr" ~ "Respiratory rate (breaths/min), median (IQR)",
+    variable == "bp_sys" ~ "Systolic blood pressure (mmHg), median (IQR)", 
+    variable == "bp_dia" ~ "Diastolic blood pressure (mmHg), median (IQR)", 
+    variable == "spo2" ~ "Oxygen saturation (%), median (IQR)",
+    variable == "gcs_lessthan_15" ~ "Glasgow coma score < 15 n/N (%)",
+    variable ==  "ustand" ~ "Unable to stand unaided n/N (%)",
+    variable ==  "days_unwell" ~ 
+      "Length of time unwell for (days), median (IQR)", 
+  variable == "ivi1_enter" ~ "Receiving intravenous fluid n/N (%)",
+    variable ==  "qSOFA" ~ "SOFA score, median (IQR)",
+     variable ==  "hb" ~ "Haemoglobin (mmol/L), median (IQR)",
+   variable ==   "cl" ~ "Chloride (mmol/L), median (IQR)",
+    variable ==  "na" ~ "Sodium (mmol/L), median (IQR)", 
+    variable ==  "k" ~ "Potassium (mmol/L), median (IQR)", 
+   variable ==  "an_gap" ~ "Anion Gap (mmol/L), median (IQR)",
+   variable ==  "bun" ~ "Blood Urea Nitrogren (mmol/L), median (IQR)",
+    variable ==  "tco2" ~ "Bicarbonate (mmol/L), median (IQR)", 
+    variable ==  "crea" ~ "Creatinine (mmol/L), median (IQR)", 
+  variable == "eGFR" ~ "eGFR (ml/min/l) MDRD, median (IQR)",
+  variable == "CrCl" ~ "Creatinine clearance (mL/min) (Cockroft and Gault), median (IQR)",
+variable == "AKI" ~ "Acute Kidney Injury at presentation (assumed GFR 100 ml/min) n/N (%)",
+     variable == "AKI75" ~ "Acute Kidney Injury at presentation (assumed GFR 75 ml/min) n/N (%)",
+   variable == "stage3" ~ "Stage 3 AKI n/N (%)",
+  variable == "stage2" ~ "Stage 2 AKI n/N (%)",
+  variable == "stage1" ~ "Stage 1 AKI n/N (%)",
+ variable == "incidentAKI" ~ "Incident AKI at 48h§ n/N (%)",
+  variable == "alive_48h" ~ "Alive at 48 hours‡ ",
+    variable == "alive" ~ "Alive at 3 months‡ ",
+variable == "recovered" ~ "AKI recovery by 48h**",
+ variable == "CKD" ~  "Chronic kidney disease (eGFR < 60 ml/min) at 3 months¶ ",
+         TRUE ~ levels),
+variable = case_when(
+ variable %in% c("kidneysize",
+                      "hydronephrosis",
+                      "losscmd",
+                      "inc_echogenicity",
+                      "RI") ~ "Ultrasound",
+      variable %in% c("pass_urine",
+                      "proteinuria",
+                      "urineprot",
+                      "blood") ~ "Urine",
+    variable %in% c("bp_sys",
+                      "bp_dia",
+                       "hr",
+                      "temp",
+                       "spo2",
+                        "rr",
+                        "gcs_lessthan_15") ~ "Observations",
+    variable %in% c("ustand",
+                    "days_unwell",
+                    "ivi1_enter",
+                    "qSOFA") ~ "Illness severity",
+            variable %in% c("hb",
+                      "bun",
+                      "cl",
+                      "na",
+                      "k",
+                      "tco2",
+                      "crea",
+                      "an_gap"
+                      ) ~ "Laboratory parameters",
+      variable %in% c("eGFR",
+                      "CrCl",
+                      "AKI", 
+                      "incidentAKI",
+                      "AKI75",
+                      "stage3",
+                      "stage2",
+                      "stage1"
+                      ) ~ "AKI",
+      variable %in% c("alive_48h",
+                      "alive",
+                      "recovered",
+                      "CKD"
+                      ) ~ "Outcomes")) ->T2
+T2 %>%
+  select(-variable) %>%
+  kbl(col.names = c("Variable", "Value"),
+   caption = "TABLE 2: Ultrasound, laboratory and derived indices") %>%
+  kable_classic(full_width = FALSE) %>%
+  pack_rows(index = make_kable_rowgroup_string(T2, variable)) %>%
+footnote(symbol  = c("Hydronephrosis/corticomedullary dif missing for 1 participant n=100",
+                      "Echogenicity missing n=2",
+                      "Lost to follow up n=7",
+                     "48h creatinine missing n=21",
+                     "3 month creatinine missing n=5",
+                     "AKI patients no 48h creatinine n=12"
+                     )) 
+
+
+  write_csv(T2, "Ultrasoundlabs.csv")
+```
+
+
+### Table of differences in variables between AKI and no AKI
+##### expressed as bootstrapped difference in expressed as median or proportion
+
+
+```{r}
+#function for bootstrapping differnce in proportions
+
+propz <- function(dat) {
+  out <- sum(dat == 1, na.rm = TRUE) / length(dat)
+  return(out)
+}
+
+bfull %>% mutate_if(is.factor,as.character) -> boot
+```
+
+
+```{r}
+boot %>% 
+  mutate(
+    alive = if_else(alive == 1, true = "yes", false = "no"),
+    alive_48h = if_else(alive_48h == 1, true = "yes", false = "no"),
+    gcs_lessthan_15 = if_else(GCS < 15, true =  "yes", false = "no"),
+    sex = ifelse(sex== "male", "1", "0"),
+    ustand = ifelse(stand =="aided"|stand == "unable","1","0"),
+    proteinuria =ifelse(proteinuria =="Positive","1","0"),
+    hiv_test_result = ifelse(hiv_test_result == "positive","1","0")
+  ) %>% 
+  select(
+    pid,
+    age,
+    sex,
+    hiv_test_result,
+    art,
+    cot,
+    inh,
+    tb_rx, 
+    rx_other_sweep1,
+    sx_vomiting,
+    sx_diarrhoea,
+    sx_cough,
+    dx_diabetes,
+    dx_hypertension, 
+    abx_prior,
+    prior_mal,
+    proteinuria,
+    urineprot,
+    blood,
+    kidneysize,
+    hydronephrosis,
+    losscmd,
+    inc_echogenicity,
+    pass_urine,
+    bp_sys,
+    bp_dia,
+    hr,
+    temp,
+    spo2,
+    rr,
+    gcs_lessthan_15, 
+    ustand,
+    days_unwell,
+    ivi1_enter,
+    qSOFA,
+    RI,
+    hb,
+    bun,
+    cl, 
+    na,
+    k, 
+    tco2,
+    crea, 
+    an_gap,
+    eGFR,
+    CrCl,
+    AKI,
+    stage,
+    CKD,
+    alive_48h,
+    alive
+    ) %>% 
+  filter(!is.na(AKI)) ->
+  df.sum.tbl
+
+
+# bootstrap differences in proportions for character vars
+left_join(
+  df.sum.tbl %>%
+    select(where(is.character)) %>%
+    select(-pid, -stage, -alive, -alive_48h) %>%
+    pivot_longer(-AKI) %>%
+    dplyr::group_by(name, AKI) %>%
+    summarise(str = paste0(
+      sum(grepl("1|yes", value, ignore.case = TRUE) , na.rm = TRUE),
+      " (",
+      sp_dc(100 * sum(grepl("1|yes", value, ignore.case = TRUE)) /
+              sum(!is.na(value)), 0),
+      "%)"
+    )) %>%
+    pivot_wider(
+      id_cols = "name",
+      names_from = "AKI",
+      values_from = "str"
+    ),
+  
+  df.sum.tbl %>%
+    select(where(is.character)) %>%
+    select(-pid) %>%
+    pivot_longer(-AKI) %>%
+    mutate(value = if_else(grepl("1|yes", value, ignore.case = TRUE),
+                           "1",
+                           "0")) %>% 
+    dplyr::group_by(name) %>%
+   dplyr::summarise(list = value, AKI)) ->p
+
+#insert code here to get chi square and fishers
+z<-p %>% select(-no, -yes) %>% 
+  mutate(list=as.numeric(list)) %>%
+  group_by(name, AKI) %>%
+  summarise(yes=sum(list), no = length(list)-sum(list)) 
+
+getdata<- function(var1) { 
+  filter<- z %>% filter(name==var1) %>%
+    ungroup() %>%
+    select(no, yes)
+  filter2<- as.matrix(filter, nrow = 2)
+
+fisher<-fisher.test(filter2)
+
+result<-c(fisher$estimate, fisher$conf.int, fisher$p.value)
+    
+  return(result) 
+  
+}
+
+getdata("abx_prior")
+
+varnames<- unique(z$name)
+fishertab<- sapply(varnames, FUN = getdata)
+
+fishertab<-t(fishertab) 
+
+fishertab<-as.data.frame(fishertab)
+```
+
+
+```{r}
+prop<- p %>% select(name, no, yes) %>%
+unique()
+
+c<-cbind(prop, fishertab) 
+
+ 
+cattab <-c %>%
+  select(name, no, yes, V4) %>%
+  rename(p.value = V4, variable = name) %>% p_round(digits = 3) %>%
+       p_mark_significant(new.col = FALSE,
+  cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 1),
+  symbols = c("****", "***", "**", "*", ""))
+
+```
+
+```{r}
+df.sum.tbl %>% 
+  select(age, urineprot, kidneysize, bp_sys, bp_dia, hr, temp, spo2, rr, days_unwell, qSOFA, RI, hb, bun, cl, na, k, tco2, crea, an_gap,
+         eGFR, CrCl, AKI) %>%
+  group_by(AKI) %>%
+  select(where(is.numeric)) %>%
+  get_summary_stats(., show = c("median","q1","q3")) %>%
+  round_df(.,2) %>%
+  unite(IQR, q1:q3, sep = "-") %>%
+  mutate(IQR = paste0('(',IQR,')')) %>%
+  unite(MedianIQR, median:IQR, sep = " ") %>%
+  pivot_wider(
+      id_cols = "variable",
+      names_from = "AKI",
+      values_from = "MedianIQR"
+    ) -> numtab
+
+```
+
+```{r}
+
+t<-df.sum.tbl %>%
+  select(age, urineprot, kidneysize, bp_sys, bp_dia, hr, temp, spo2, rr, days_unwell, qSOFA, RI, hb, bun, cl, na, k, tco2, crea, an_gap,
+         eGFR, CrCl, AKI) %>%
+  pivot_longer(!AKI, names_to = "variable", values_to = "value") %>%
+  #mutate(AKI = as.factor(AKI)) %>%
+  group_by(variable) %>%
+  do(tidy(wilcox.test(value ~ AKI, data = .)) %>%
+       p_round(digits = 3) %>%
+       p_mark_significant(new.col = FALSE,
+  cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 1),
+  symbols = c("****", "***", "**", "*", "")))
+
+t<- t %>% select(variable, p.value) 
+
+TABLE<-numtab %>% left_join(t) 
+
+```
+
+
+```{r}
+TABLE<-cattab %>% rbind(TABLE) %>%
+  distinct() %>%
+  ungroup()
+
+
+```
+
+Get TABLE variables in right order
+
+```{r}
+
+TABLE<-TABLE %>% mutate(
+  variable = factor(variable, 
+    levels = c("age",
+    "sex",
+    "hiv_test_result",
+    "art",
+    "cot",
+    "inh",
+    "tb_rx", 
+      "prior_mal",
+    "dx_diabetes",
+    "dx_hypertension", 
+    "abx_prior",
+     "rx_other_sweep1",
+    "sx_vomiting",
+    "sx_diarrhoea",
+    "sx_cough",
+     "kidneysize",
+     "hydronephrosis",
+        "losscmd",
+    "inc_echogenicity",
+     "RI",
+      "pass_urine",
+    "proteinuria",
+   "urineprot",
+    "blood",
+    "temp",
+    "hr",
+     "rr",
+    "bp_sys",
+    "bp_dia",
+    "spo2",
+    "gcs_lessthan_15", 
+    "ustand",
+    "days_unwell",
+    "ivi1_enter",
+    "qSOFA",
+    "hb",
+    "bun",
+    "cl", 
+    "na",
+    "k", 
+    "tco2",
+    "crea", 
+    "an_gap",
+    "eGFR",
+    "CrCl",
+    "CKD"),
+   labels = c(
+"Age† (years), median (IQR)",
+"Male sex* n/N (%)",
+ "HIV infected*, n/N (%)",
+ "Receiving antiretroviral therapy*, n/N (%)",
+ "Receiving co-trimoxazole preventative therapy*, n/N (%)",
+ "Receiving isoniazid preventative therapy*, n/N (%)",
+"Received TB treatment*, n/N (%)",
+"Prior Malaria* n/N (%)",
+ "Diagnosis of Diabetes* n/N (%)",
+ "Diagnosis of Hypertension* n/N (%)",
+"Antibiotic use prior* n/N (%)",
+"Over the counter/traditional meds* n/N (%)",
+"Vomiting* n/N (%)",
+"Diarrhoea* n/N (%)",
+"Cough* n/N (%)",
+"Kidney Size† (cm), median (IQR)",
+"Hydronephrosis*  n/N (%)",
+ "Loss of corticomedullary differentiation* n/N (%)",
+"Increased echogenicity* n/N (%)",
+"Renal Resistive Index†, median (IQR)",
+"Able to pass urine* n/N (%)",
+ "Proteinuria on dipstick* n/N (%)",
+"Proteinuria† (mg/dL), median (IQR)",
+ "Microscopic Haematuria* n/N (%)",
+ "Temperature† (C), median (IQR)",
+"Heart rate† (beats/min), median (IQR)",
+"Respiratory rate† (breaths/min), median (IQR)",
+ "Systolic blood pressure† (mmHg), median (IQR)", 
+"Diastolic blood pressure† (mmHg), median (IQR)", 
+ "Oxygen saturation† (%), median (IQR)",
+ "Glasgow coma score < 15* n/N (%)",
+"Unable to stand unaided* n/N (%)",
+  "Length of time unwell† (days), median (IQR)", 
+"Receiving intravenous fluid* n/N (%)",
+ "SOFA score†, median (IQR)",
+"Haemoglobin† (mmol/L), median (IQR)",
+"Blood Urea Nitrogren† (mmol/L), median (IQR)",
+ "Chloride† (mmol/L), median (IQR)",
+ "Sodium† (mmol/L), median (IQR)", 
+ "Potassium† (mmol/L), median (IQR)", 
+"Bicarbonate† (mmol/L), median (IQR)", 
+"Creatinine† (mmol/L), median (IQR)", 
+ "Anion Gap† (mmol/L), median (IQR)",
+ "eGFR† (ml/min/l) CKD-EPI, median (IQR)",
+ "Creatinine clearance† (mL/min) (Cockroft and Gault), median (IQR)",
+"Chronic kidney disease at 3 months* n/N (%)")))
+
+
+TABLE<-TABLE %>% arrange(variable)
+
+```
+
+
+```{r}
+
+TABLE %>%
+  kbl(col.names=c("Variable","No AKI","AKI","p value"),
+          caption = "TABLE 3: Univariable associations with AKI status") %>%
+  kable_classic(full_width=FALSE) %>%
+  pack_rows("Demographics", 1, 2) %>%
+  pack_rows("HIV/TB/Malaria", 3, 8) %>%
+  pack_rows("Comorbidities", 9, 10) %>%
+  pack_rows("Drugs", 11, 12) %>%
+  pack_rows("Symptoms", 13, 15) %>%
+  pack_rows("Ultrasound", 16, 20) %>%
+  pack_rows("Urine", 21, 24) %>%
+  pack_rows("Observations", 25, 31) %>%
+  pack_rows("Severity", 32, 35) %>%
+  pack_rows("Labs", 36, 43) %>%
+  pack_rows("Renal function", 44, 46) %>%
+footnote(symbol  = c("Fisher's exact test",
+                      "Wilcox test")) 
+
+
+
+  write_csv(TABLE, "byAKI.csv")
+```
+
+
+
+## Look at the data
+
+```{r}
+#get bfull ready
+
+bfull<-bfull %>%  mutate(
+    alive = if_else(alive == 1, true = "yes", false = "no"),
+    alive_48h = if_else(alive_48h == 1, true = "yes", false = "no"),
+    gcs_lessthan_15 = if_else(GCS < 15, true =  "Yes", false = "No"),
+    ustand = ifelse(stand =="aided"|stand == "unable","Yes","No"),
+    proteinuria =ifelse(proteinuria =="Positive","Yes","No"))
+```
+
+
+```{r}
+demographic_cat_vars <-tribble(
+  ~var,~varlab,
+  "sex","Sex",
+  "smoker","Smoker",
+  "alcohol","Alcohol use",
+  "food_insecurity", "Food insecurity"
+  ) %>%
+  mutate(group="Demographics")
+
+comorbidity_cat_vars<-tribble(
+  ~var, ~varlab,
+  "dx_hypertension","Hypertension",
+  "dx_diabetes","Diabetes",
+  "tb_rx", "Treated for TB",
+  "hiv_test_result", "HIV Status",
+  "dx_cancer", "Cancer",
+  "dx_lung","Lung disease",
+  "dx_heart", "Heart disease",
+  "dx_palliative","Palliative",
+   "dx_kidney","Kidney disease",
+  "dx_liver","Liver disease",
+  "dx_stroke","Stroke"
+  ) %>%
+  mutate(group="Comorbidities")
+
+sx_cat_vars<-tribble(
+  ~var, ~varlab,
+  "sx_fever","Fever",
+  "sx_cough","Cough",
+  "sx_cp","Chest pain",
+  "sx_headach","Headache",
+  "sx_neckstiff","Neck stiffness",
+  "sx_myalgia","Myalgia",
+  "sx_sweat","Sweating",
+  "sx_confusion","Confusion",
+  "sx_nausea","Nausea",
+  "sx_vomiting","Vomiting",
+  "sx_diarrhoea","Diarrhoea",
+  "sx_abdoswell","Abdominal Swelling",
+  "sx_abdopain","Abdominal Pain",
+  "sx_urine", "Urinary symptoms",
+  "sx_anorexia","Anorexia",
+  "sx_cough_sputum","Sputum",
+  "sx_cough_blood","Haemoptysis",
+  "ustand","Unable to stand"
+  ) %>%
+  mutate(group="Symptoms")
+
+hiv_cat_vars<-tribble(
+  ~var,~varlab,
+  "art", "Taking ART",
+  "art_regimen", "ART Regimen",
+  "cot","Taking Cotrimoxazole",
+  "inh","Taking Isaniazid",
+) %>%
+  mutate(group="HIV Characteristics")
+
+renal_cat_vars<-tribble(
+  ~var, ~varlab,
+  "gcs_lessthan_15", "GCS <15",
+  "eyessunken","Sunken eyes",
+  "mucousdry", "Mucous dry",
+  "skinturgor", "Skin turgor",
+  "pass_urine", "Passing urine",
+  "hydronephrosis", "Hydronephrosis",
+  "losscmd", "Loss of corticomedullary differentiation",
+  "inc_echogenicity", "Increased echogenicity", 
+  "proteinuria", "Dipstick proteinuria",
+  "blood", "Microscopic haematuria",
+  "stage","AKI stage",
+  "CKD", "CKD at 3 months",
+  "alive", "Alive at 3 months"
+)  %>%
+    mutate(group="Renal characteristics")
+
+
+vital_cat_vars<-tribble(
+  ~var,~varlab
+)
+
+cat_vars<-bind_rows(demographic_cat_vars,
+                    comorbidity_cat_vars,
+                    sx_cat_vars,
+                    hiv_cat_vars,
+                    vital_cat_vars,
+                    renal_cat_vars)
+                    
+#continuous variables
+demographic_cont_vars<-tribble(
+  ~var, ~varlab,
+  "age","Age"
+) %>% mutate(group="Demographics")
+
+vital_cont_vars<-tribble(
+  ~var,~varlab,
+  "bmi","Body Mass Index (BMI)",
+  "bp_sys","Systolic blood pressure",
+  "bp_dia","Diastolic blood pressure",
+  "hr","Heart rate",
+  "temp","Temperature",
+  "rr","Respiratory Rate",
+  "spo2","Oxygen saturations",
+  "qSOFA", "qSOFA score",
+  "kidneysize", "Kidney size (cm)",
+  "RI", "Resitive index"
+) %>%
+  mutate(group="Vitals")
+
+
+hiv_cont_vars<-tribble(
+  ~var, ~varlab,
+  "vl", "Viral load",
+  "cd4", "CD4 count"
+) %>%
+  mutate(group="HIV data")
+
+biochem_cont_vars<-tribble(
+  ~var, ~varlab,
+  "an_gap", "Anion gap",
+  "bun", "Blood urea nitrogren",
+  "cl","Chloride",
+  "crea","Creatinine",
+  "glu","Glucose",
+  "hb","Haemoglobin",
+  "hct", "Haematocrit",
+  "i_ca","Calcium",
+  "k", "Potassium",
+  "na", "Sodium",
+  "urineprot", "Urine protein mg/dl",
+  "eGFR","eGFR",
+  "CrCl","CrCl"
+) %>%
+  mutate(group="Biochem")
+  
+
+continuous_vars<- bind_rows(
+  demographic_cont_vars,
+  vital_cont_vars,
+  hiv_cont_vars,
+  biochem_cont_vars,
+)
+
+
+#all variables
+vars<-bind_rows(cat_vars,continuous_vars)
+get_var_labs <- function(v) {
+  vars$varlab[match(v, vars$var)]
+}
+
+
+pivot_continuous_longer <- function(data, vars){
+  col_names <- vars$var
+ bfull %>%
+    dplyr::select(one_of("pid", col_names)) %>%
+    pivot_longer(cols = col_names, 
+                 names_to = "var", 
+                 values_to = "value") %>%
+    left_join(vars, by = "var") %>%
+    filter(!is.na(value)) 
+}
+continuous_var_df <- pivot_continuous_longer(bfull, 
+                                             vars = continuous_vars)
+
+```
+
+
+```{r, echo = FALSE, include=FALSE}
+plot_box <- function(data){
+  ggplot(data, 
+       aes(x = varlab, y = value)) +
+  geom_boxplot(outlier.size = 1) + 
+  facet_wrap(~varlab, scales = "free") +
+  xlab("") +
+  ylab("Value") +
+   theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        strip.text = element_text(size = 7))
+}
+plot_box(continuous_var_df)
+
+```
+
+```{r}
+contvardf<-as.data.frame(continuous_var_df)
+
+plot_hist <- function(data){
+  ggplot(data,
+       aes(x = value)) +
+  geom_histogram(bins = 40, color = "white") +
+  facet_wrap(~varlab, scales = "free", ncol = 4) + 
+  xlab("") + ylab("Frequency") +
+  theme(strip.text = element_text(size = 7))
+}
+plot_hist(continuous_var_df)
+
+  facet_wrap(~varlab,scales = "free")
+```
+
+# Start logistic regression
+
+Outcome /dependent dichotomous variable = AKI
+calulated from estimated creatinine (KDIGO critieria - sex, weight) and baseline Cr
+(because not much AKI at 48h / aquired AKI within 48h + incomplete datasat)
+
+
+What proportion have the outcome of interest - AKI?
+```{r}
+prop.table(table(bfull$AKI))
+
+prop.table(table(bfull$stageAKI))
+
+prop.table(table(bfull$CKD))
+
+
+prop.table(table(is.na(bfull$an_gap)))
+```
+
+What proportion died?
+```{r}
+prop.table(table(surv$alive))
+```
+
+
+What proportion have proteinuria?
+
+```{r}
+prop.table(table(bfull$proteinuria))
+```
+
+### Get the data frame with the key variables of interest
+
+```{r, results='hide'}
+
+boot %>% 
+  mutate(
+    gcs_lessthan_15 = if_else(GCS < 15, true =  "yes", false = "no"),
+    sex = ifelse(sex== "male", "1", "0"),
+    ustand = ifelse(stand =="aided"|stand == "unable","1","0"),
+    proteinuria =ifelse(proteinuria =="Positive","1","0"),
+    hiv_test_result = ifelse(hiv_test_result == "positive","1","0")
+ ) %>%
+  select(age, sex, days_unwell, ustand, gcs_lessthan_15, proteinuria, hiv_test_result, tb_rx, urineprot, bp_sys, ivi1_enter, pass_urine,
+         muac, bmi, blood, qSOFA, cl, hb, RI, kidneysize, AKI, inc_echogenicity, hydronephrosis, losscmd, prior_mal, abx_prior)
+
+
+
+x<-bfull %>%
+  select(sex, age, days_unwell, immobile, walking, hiv_test_result, tb_rx, rx_other_sweep_txt, abx_prior, prior_mal, pulsepressure, stand, ivi1_enter,pass_urine, change_urine,
+         muac, bmi, protein, blood, qSOFA, cl, hb, RI, kidneysize, AKI)
+```
+
+## How much missing data do we have?
+
+This plot demonstrates the proportion of missing data by variable - resistive index (RI) is the highest, followed by
+anion gap, potassium and HIV status
+
+```{r}
+## Modelling determinents of AKI
+
+### Missing data
+
+# Plot missing data
+boot %>% mutate(
+                gcs_lessthan_15 = if_else(GCS < 15, true =  "yes", false = "no"), 
+                 ustand = ifelse(stand =="aided"|stand == "unable","1","0"),
+                 ) %>%
+    select(
+    age,
+    sex,
+    hiv_test_result,
+    art,
+    cot,
+    inh,
+    tb_rx, 
+    rx_other_sweep1,
+    dx_diabetes,
+    dx_hypertension, 
+    dx_kidney,
+    abx_prior,
+    prior_mal,
+    proteinuria,
+    blood,
+    kidneysize,
+    hydronephrosis,
+    losscmd,
+    inc_echogenicity,
+    pass_urine,
+    bp_sys,
+    bp_dia,
+    hr,
+    temp,
+    spo2,
+    rr,
+    gcs_lessthan_15, 
+    bmi,
+    ustand,
+    days_unwell,
+    ivi1_enter,
+    qSOFA,
+    RI,
+    hb,
+    bun,
+    cl, 
+    na,
+    k, 
+    tco2,
+    crea, 
+    an_gap,
+    AKI
+  ) %>%
+  rename(
+    Age = age,
+    Sex = sex,
+    HIV = hiv_test_result,
+    ART = art,
+    CPT = cot,
+    INH = inh,
+    TB_rx = tb_rx, 
+    BMI = bmi,
+    Drugs_other = rx_other_sweep1,
+    Diabetes = dx_diabetes,
+    Hypertension = dx_hypertension, 
+    KnownCKD = dx_kidney,
+    Days_unwell = days_unwell,
+    Abx = abx_prior,
+    Malaria = prior_mal,
+    Proteinuria = proteinuria,
+    Haematuria = blood,
+    Kidney_size = kidneysize,
+    Hydronephrosis = hydronephrosis,
+    CMD = losscmd,
+    Echogenicity = inc_echogenicity,
+    Urine = pass_urine,
+    SBP = bp_sys,
+    DBP = bp_dia,
+    HR = hr,
+    Temp = temp,
+    Sats = spo2,
+    RR = rr,
+    GCS = gcs_lessthan_15, 
+    Cant_stand = ustand,
+    Fluids = ivi1_enter,
+    K = k, 
+    Cl= cl,
+    BUN = bun,
+    Hb = hb,
+    Bicarb = tco2,
+    Creatinine = crea,
+    Anion_gap = an_gap,
+    Sodium = na
+    
+  ) %>%
+  mutate(across(
+    matches("ART|CPT|INH"),
+    ~ case_when(
+      HIV == "negative" ~ "Not done (HIV-)",
+      TRUE ~ as.character(.x)
+    )
+  )) %>%
+  mutate(across(
+    everything(),
+    ~
+      case_when(
+        is.na(.x) ~ "Missing",
+        .x == "Not done (HIV-)" ~ "Not done (HIV-)",
+        TRUE ~ "Not missing"
+      )
+  )) %>%
+  pivot_longer(everything()) %>%
+  group_by(name) %>%
+  mutate(sortvar = sum(value == "Not missing")) %>%
+  ggplot(aes(fct_reorder(name, sortvar), fill = value)) +
+  geom_bar() +
+  coord_flip() +
+  scale_fill_manual(values = viridis_pal()(6)[c(2, 4, 5)]) +
+  labs(y = "Number of participants",
+       x = "Variable") +
+  theme_bw() +
+  theme(legend.title = element_blank()) 
+
+
+```
+#### HIV status 16/101 missing 
+
+
+### Plot correlation matrix
+
+
+```{r transform, fig.cap = "Density plots of transformed and untransformed variables", fig.height = 7, fig.width = 9}
+# Transform variables 
+boot %>% 
+  select(
+    age,
+    urineprot,
+    proteinuria,
+    sex,
+    hiv_test_result,
+    urineprot,
+    kidneysize,
+    bp_sys,
+    bp_dia,
+    hr,
+    temp,
+    spo2,
+    rr,
+    GCS, 
+    bmi,
+    days_unwell,
+    qSOFA,
+    RI,
+    hb,
+    bun,
+    cl, 
+    na,
+    k, 
+    tco2,
+    crea, 
+    an_gap,
+    stand
+  ) %>%
+  mutate(
+    male = if_else(sex == "male", 1, 0),
+    gcs_lessthan_15 = if_else(GCS < 15, true =  "yes", false = "no"),
+    ustand = ifelse(stand =="aided"|stand == "unable","1","0"),
+    proteinuria =ifelse(proteinuria =="Positive","1","0"),
+    hiv_reactive = case_when(
+      hiv_test_result == "positive" ~ 1,
+      hiv_test_result == "negative" ~ 0,
+      TRUE ~ NA_real_
+    ),
+    gcs.low = as.numeric(GCS < 15),
+    ustand = as.numeric(ustand),
+    gcs_lessthan_15 = as.numeric(ustand),
+    proteinuria = as.numeric(proteinuria)
+    
+  ) %>%
+  select(-c(sex, hiv_test_result, GCS,stand))  ->
+  df.mod.trans
+df.mod.trans[df.mod.trans== 999] <- NA
+df.mod.trans %>%
+  pivot_longer(everything()) %>%
+  ggplot(aes(value)) +
+  geom_density() +
+  facet_wrap( ~ name, scales = "free")
+
+# drop unused vars
+df.mod.trans  -> df.mod.trans
+```
+
+
+## Correlation matrix - which variables are too correlated to include in the model together? 
+
+Variables that are too closely correlated will cause issues with collinearity, for example SBP and DBP so cannot be included in a glm together. The darker orange tiles represent variables which correlate. 
+
+There are dark orange tiles indicating correlation between Na and CL, Creatinine and BUN, SBP amd DBP, qSOFA and RR
+
+
+```{r}
+df.mod.trans %>% 
+  select(-gcs.low, -urineprot) %>%
+  filter(
+          !is.na(kidneysize), !is.na(RI),
+          !is.na(tco2), !is.na(temp),
+          !is.na(cl), !is.na(bun),
+          !is.na(hb), !is.na(an_gap),
+          !is.na(k), !is.na(RI), !is.na(days_unwell),
+          !is.na(crea), !is.na(spo2), !is.na(bmi), !is.na(bp_dia), !is.na(age)) %>%
+         dplyr:: rename(
+    Age = age,
+    Creatinine = crea,
+    BMI = bmi,
+    HR = hr,
+    SpO2 = spo2,
+    SBP = bp_sys,
+    DBP = bp_dia,
+    HR = hr,
+    BUN = bun,
+    RR = rr,
+    Anion_gap = an_gap,
+    Temp = temp,
+    K = k,
+    Hb = hb,
+    Cl = cl,
+    Na = na,
+    Bicarbonate = tco2,
+    Proteinuria = proteinuria,
+    Male = male,
+    Daysunwell = days_unwell,
+    Kidneysize = kidneysize,
+    HIV = hiv_reactive,
+    GCS_low = gcs_lessthan_15,
+    Cantstand = ustand) %>%
+  
+  
+  cor(., use = "pairwise") %>%
+  as.data.frame() %>%
+  pheatmap() ->pheatmap
+```
+
+
+### Impute missing data
+
+First prepare the dataframe - only select variables important for imputation
+
+```{r, results = 'hide'}
+
+x<-baseline %>% select(pid, data_date) %>%  mutate(pid=(sub("PAR_","",baseline$pid)))
+
+
+surv<- surv %>%
+    mutate(pid=(sub("PAR_","",surv$pid))) %>%
+  select(-crf_ver)
+
+ 
+surv<-surv %>% left_join(x, by="pid")  %>%
+  mutate(followup=ymd_hms(followup)) %>%
+  mutate(f_time=difftime(followup,data_date,units="days")) %>%
+  mutate(died=if_else(alive==0,1,0))
+
+#surv<-surv %>% subset(!is.na(alive))
+
+bfull<-bfull %>% left_join(surv,by="pid")
+  
+bis<-bfull %>% select(dx_hypertension, hiv_test_result, bmi, bp_dia, tco2, spo2, blood, proteinuria, RI, kidneysize, qSOFA, AKI, age, sex, days_unwell, cl, hb, proteinuria, losscmd, hydronephrosis, inc_echogenicity, prior_mal, prior_mal,dx_diabetes, bun, an_gap, k, crea, died, CKD, f_time)
+
+
+bis <- bis %>% 
+  mutate(old = age>=40,
+         #young = age<40,
+         bigRI = RI >0.7,
+         hiv_test_result = if_else(hiv_test_result=="positive",1,0),
+         AKI=if_else(AKI=="yes",1,0),
+         CKD=if_else(CKD=="yes",1,0),
+         f_time=as.numeric(f_time))
+
+```
+
+```{r, results = 'hide'}
+
+imp<-mice(bis, m = 5, print = FALSE)
+
+complete(imp, "long", include = FALSE, print = FALSE)
+
+data<-complete(imp,c(1))
+
+```
+Log binomial regression
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ age, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ age))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ dx_hypertension, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ dx_hypertension))
+pool(tst1)
+pool(tst2)
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ bp_dia, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ bp_dia))
+pool(tst1)
+pool(tst2)
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ sex, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ sex))
+pool(tst1)
+pool(tst2)
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+
+```{r}
+tst1<-with(imp, glm (AKI ~ bmi, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ bmi))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ tco2, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ tco2))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+```
+
+
+```{r}
+tst1<-with(imp, glm (AKI ~ bun, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ bun))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ spo2, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ spo2))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+Microscopic Haematuria
+
+```{r}
+tst1<-with(imp, glm (AKI ~ blood, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ blood))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+Proteinuria
+
+```{r}
+tst1<-with(imp, glm (AKI ~ proteinuria, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ proteinuria))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+HIV
+
+```{r}
+tst1<-with(imp, glm (AKI ~ hiv_test_result, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ hiv_test_result))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+tst1<-with(imp, glm (AKI ~ RI, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ RI))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ kidneysize, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ kidneysize))
+pool(tst1)
+pool(tst2)
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+tst1<-with(imp, glm (AKI ~ inc_echogenicity, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ inc_echogenicity))
+pool(tst1)
+pool(tst2)
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+tst1<-with(imp, glm (AKI ~ hydronephrosis, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ hydronephrosis))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+tst1<-with(imp, glm (AKI ~ losscmd, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ losscmd))
+pool(tst1)
+pool(tst2)
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+```
+
+
+```{r}
+tst1<-with(imp, glm (AKI ~ qSOFA, family=binomial(logit)))
+tst2<-with(imp, logbin(AKI ~ qSOFA))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
+
+```
+
+```{r}
+tst1<-with(imp, glm (AKI ~ bp_dia + bmi + proteinuria + blood + RI + hiv_test_result, family=binomial(logit)))
+tst2<-with(imp, logbin (AKI ~ bp_dia + bmi + proteinuria + blood + RI + hiv_test_result))
+pool(tst1)
+pool(tst2)
+
+summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+```
+
+
+```{r}
+set.seed(123)
+tst1<-with(imp, glm (AKI ~ ns(age,3) + hiv_test_result + qSOFA + bp_dia, family=binomial(logit)))
+
+pool(tst1)
+
+summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
+
+```
+
+Plot age as a spline term unadjsuted model
+```{r}
+base_model<-lrm(AKI ~ rcs(age, 3), data = bis)
+pre<-Predict(base_model,age=18:90,fun = plogis)
+ggplot(pre,adj.subtitle = FALSE,ylab = 'Prob(AKI)')
+```
+
+Use bootComb to obtain the 95% CI
+
+
+Compare odds of age 40 as ref, construct 95% CIs using bootComb and probabilities with 95% CI from Pre dataframe
+
+```{r}
+#age= 20 versus 40
+dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.1147732, qUpp = 0.4944884, alpha = 0.05) #p_age20
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.2626062,0.2355296))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+
+```{r}
+#age= 30 versus 40
+dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.1460472, qUpp = 0.3409471, alpha = 0.05) #p_age30
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.2292570,0.2355296))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+
+20 versus 60
+
+```{r}
+#age= 50 versus 40
+dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.1925026, qUpp = 0.4617904, alpha = 0.05) #p_age50
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.3114212,0.2355296))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+```{r}
+#age= 60 versus 40
+dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.3084261, qUpp = 0.6169086, alpha = 0.05) #p_age60
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.4587142,0.2355296))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+```{r}
+#age= 70 versus 40
+dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.4109872, qUpp = 0.8173938, alpha = 0.05) #p_age70
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.6386366,0.2355296))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+20 versus 30
+
+```{r}
+#age= 80 versus 40
+dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.4821604, qUpp = 0.9371289, alpha = 0.05) #p_age80
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.7883775,0.2355296))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+Full Model - set values as median diastolic BP = 75, median qSOFA score =2 and HIV is positive
+
+```{r}
+fullmodel<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + bp_dia + qSOFA, data = bis)
+pre<-Predict(fullmodel,age=18:90, bp_dia=75, qSOFA=2,hiv_test_result=1,fun = plogis)
+ggplot(pre,adj.subtitle = FALSE,ylab = 'Prob(AKI)')
+
+pre
+
+```
+Full Model - HIV is negative, qSOFA is 1  - effect of age on prob(AKI) appears q different 
+
+```{r}
+fullmodel<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + bp_dia + qSOFA, data = bis)
+pre<-Predict(fullmodel,age=18:90, bp_dia=75, qSOFA=1,hiv_test_result=0,fun = plogis)
+ggplot(pre,adj.subtitle = FALSE,ylab = 'Prob(AKI)')
+```
+Using 40 as the reference in the adjusted model
+
+```{r}
+#age= 20 versus 40
+dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.2363774, qUpp = 0.8398127, alpha = 0.05) #p_age20
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.5602300,0.2683258))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+
+```{r}
+#age= 30 versus 40
+dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.2067034, qUpp = 0.5302494, alpha = 0.05) #p_age30
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.3516297,0.2683258))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+
+```{r}
+#age= 50 versus 40
+dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.1992210, qUpp = 0.5254521, alpha = 0.05) #p_age50
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.3441991,0.2683258))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+
+```{r}
+#age= 60 versus 40
+dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.3564298, qUpp = 0.7442750, alpha = 0.05) #p_age60
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.5593950,0.2683258))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+```{r}
+#age= 70 versus 40
+dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.5091643, qUpp = 0.9350877, alpha = 0.05) #p_age70
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.7944780,0.2683258))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+
+```{r}
+#age= 80 versus 40
+dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
+dist1<-getBetaFromCI(qLow = 0.6253068, qUpp = 0.9886285, alpha = 0.05) #p_age80
+distList<-list(dist1$r,dist2$r)
+
+combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
+p_age<-combFun(c(0.9233437,0.2683258))
+print(p_age)
+ci<-bootComb(distList = distList,combFun = combFun)$conf.int
+print(ci)
+```
+
+Forest plot of point estimates and 95% CIs
+
+```{r}
+variable<-c("HIV+","qSOFA","BP")
+OR <- model$estimate[-1:-4]
+LL<- model$`2.5 %`[-1:-4]
+UL<- model$`97.5 %`[-1:-4]
+data.frame<-data.frame(variable, OR, LL, UL)
+
+
+ggplot(data = data.frame) +
+  geom_segment(aes(x = `LL`, xend = `UL`, y = variable, yend = variable), size = 1,
+               colour = "black") +
+  geom_point(aes(x = `OR`, y = variable), size = 4, shape = 15) +
+  geom_vline(xintercept = 1) +
+  xlab("Adjusted odds ratio with 95% confidence interval") +
+  ylab("Risk factor") +
+  #xlim(0,5) +
+  theme_bw(base_size = 14)
+
+```
+
+Cutsom made forest plot which extracts the relevent age categoryies
+
+```{r}
+foresttab<-structure(list(mean = c(1.43,3.46, 10.54, 4.86, 2.94, 1.34),
+               lower = c(0.50,1.12,2.22,1.14,1.03,1.00),
+               upper = c(4.07,10.27,45.54,20.68,8.41,1.79)),
+          .Names = c("mean", "lower", "upper"),
+          row.names = c("50 years","60 years","70 years","HIV+","qSOFA","DBP"),
+          class = "data.frame")
+
+tabletext<-cbind(c("50 years","60 years","70 years","HIV+","qSOFA","DBP"),
+                 c("1.43","3.46", "10.54", "4.86", "2.94", "1.34"))
+
+foresttab %>%
+  forestplot(labeltext = tabletext,
+             is.summary = FALSE,
+             #clip = c(0,10),
+             xlog = FALSE,
+             zero =1,
+             xlab= "Adjsuted OR with 95% confidence interval",
+             col = fpColors(box = "royalblue",
+                            line = "darkblue",
+                            summary = "royalblue"))
+```
+
+
+
+Complete Cases Analysis - using unimputed dataset
+ 
+ Age 
+ 
+```{r}
+fit1<-glm(AKI ~ age,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ age, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+Sex 
+```{r}
+fit1<-glm(AKI ~ sex,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ sex, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+HT 
+ 
+```{r}
+fit1<-glm(AKI ~ dx_hypertension,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ dx_hypertension, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+HIV
+
+```{r}
+fit1<-glm(AKI ~ hiv_test_result,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ hiv_test_result, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ bmi,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ bmi, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ bp_dia,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ bp_dia, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ tco2,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ tco2, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ spo2,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ spo2, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ blood,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ blood, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ proteinuria,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ proteinuria, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ RI,data = bis, family=binomial(link='logit'))
+fit2<-logbin(RI ~ proteinuria, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ kidneysize,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ kidneysize, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ losscmd,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ losscmd, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ inc_echogenicity,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ inc_echogenicity, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+```{r}
+fit1<-glm(AKI ~ qSOFA,data = bis, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ qSOFA, data = bis)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+```
+
+full model complete case analysis
+```{r}
+set.seed(123)
+fit1<-glm(AKI ~ rcs(age,3) + hiv_test_result + qSOFA + bp_dia,data = bis, family=binomial(link='logit'))
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+
+
+```
+
+## Prepare data for survival analysis
+
+
+# Survival Analysis 
+
+
+### Hazard ratio of death from cox proportional hazards model, adjusted for age, with 95% confidence interval
+
+```{r}
+ggsurvplot(
+  survfit(Surv(f_time, died) ~ hiv_test_result,
+          data = subset(bis, !is.na(hiv_test_result))), 
+          conf.int = F, xlim = c(0, 90), 
+          ylim = (c(0.6,1)), ggtheme = theme_bw(), 
+          size = 0.5, 
+          break.time.by = 30, 
+          linetype = c("strata"),
+          censor.shape = 124,
+          censor.size = 2.5,
+          pval = "HR 2.84 (95% CI 1.19-6.76)", 
+          pval.coord = c(15,0.65), pval.size = 4,
+          legend.title = "",
+          legend.labs = c("HIV negative","HIV positive"),
+          xlab = "Time since recruitment (days)"
+)
+```
+
+
+```{r}
+ggsurvplot(
+  survfit(Surv(f_time, died) ~ AKI,
+          data = subset(bis, !is.na(AKI))), 
+          conf.int = F, xlim = c(0, 90), 
+          ylim = (c(0.6,1)), ggtheme = theme_bw(), 
+          size = 0.5, 
+          break.time.by = 30, 
+          linetype = c("strata"),
+          censor.shape = 124,
+          censor.size = 2.5,
+          pval = FALSE, 
+          legend.title = "",
+          legend.labs = c("No AKI","AKI"),
+          xlab = "Time since recruitment (days)"
+) 
+
+```
+
+
+Does PH hold - yes for HIV, for AKI its borderline = 0.05
+
+```{r}
+res.cox<-coxph(formula = Surv(f_time, died) ~ strata(hiv_test_result) + age, data = data)
+res.cox<-coxph(formula = Surv(f_time, died) ~ AKI, data = data)
+test.ph <- cox.zph(res.cox)
+test.ph
+
+```
+
+
+FINAL MODEL STRATIFIED BY AKI STATUS as PH do not hold
+
+```{r}
+set.seed(123)
+res.cox1<-coxph(formula = Surv(f_time, died) ~ age + hiv_test_result + strata(AKI), data = data) 
+summary(res.cox1)
+
+```
+
+
+
+
+
+
