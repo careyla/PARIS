@@ -33,8 +33,10 @@ library(survminer)
 library(mice)
 library(caret)
 library(rms) 
+library(blantyreSepsis)
 library(viridis)
 library(pheatmap)
+library(splines)
 library(nephro)
 library(forestplot)
 library(pROC)
@@ -207,6 +209,8 @@ raw_data<-raw_data %>% mutate(
 
 
 raw_data<-raw_data[-c(57),]
+
+write_csv(raw_data,here("raw_data.csv"))
 ```
 
 
@@ -668,8 +672,6 @@ var_label(bfull)<-list(
 
 ### Demographics of included patients
 
-Interestingly, really low % of in-hospital/hospital acquired AKI, defined by AKI at 48h (jump in sCr between admission cr and
-cr at 48h). Limitation is alot of missing 48h sCr results - working on this with Sylvester and Bright as we think they have the data, just needs to be located and sent across to me. 
 
 Table 1 participants 
 ```{r}
@@ -1102,10 +1104,11 @@ c<-cbind(prop, fishertab)
  
 cattab <-c %>%
   select(name, no, yes, V4) %>%
-  rename(p.value = V4, variable = name) %>% p_round(digits = 3) %>%
-       p_mark_significant(new.col = FALSE,
-  cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 1),
-  symbols = c("****", "***", "**", "*", ""))
+  rename(p.value = V4, variable = name) %>% 
+  p_round(digits=2) %>%
+  p_format(accuracy = 0.01) %>%
+  p_mark_significant(new.col = FALSE)
+
 
 ```
 
@@ -1137,10 +1140,10 @@ t<-df.sum.tbl %>%
   #mutate(AKI = as.factor(AKI)) %>%
   group_by(variable) %>%
   do(tidy(wilcox.test(value ~ AKI, data = .)) %>%
-       p_round(digits = 3) %>%
-       p_mark_significant(new.col = FALSE,
-  cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 1),
-  symbols = c("****", "***", "**", "*", "")))
+       p_round(digits=2) %>%
+       p_format(accuracy = 0.01) %>%
+       p_mark_significant(new.col = FALSE))
+
 
 t<- t %>% select(variable, p.value) 
 
@@ -1279,15 +1282,31 @@ TABLE %>%
   pack_rows("Observations", 25, 31) %>%
   pack_rows("Severity", 32, 35) %>%
   pack_rows("Labs", 36, 43) %>%
-  pack_rows("Renal function", 44, 46) %>%
-footnote(symbol  = c("Fisher's exact test",
-                      "Wilcox test")) 
+  pack_rows("Renal function", 44, 46) 
 
 
 
   write_csv(TABLE, "byAKI.csv")
 ```
 
+TAble for poster 
+
+```{r}
+t<-df.sum.tbl %>%
+  select(age, urineprot, kidneysize, bp_sys, bp_dia, hr, temp, spo2, rr, days_unwell, qSOFA, RI, hb, bun, cl, na, k, tco2, crea, an_gap,
+         eGFR, CrCl, AKI) %>%
+  pivot_longer(!AKI, names_to = "variable", values_to = "value") %>%
+  #mutate(AKI = as.factor(AKI)) %>%
+  group_by(variable) %>%
+  do(tidy(wilcox.test(value ~ AKI, data = .)) %>%
+       p_round(digits=2) %>%
+       p_format(accuracy = 0.01) %>%
+       p_mark_significant())
+
+t<- t %>% select(variable, p.value) 
+
+TABLE<-numtab %>% left_join(t) 
+```
 
 
 ## Look at the data
@@ -1504,11 +1523,12 @@ plot_hist(continuous_var_df)
   facet_wrap(~varlab,scales = "free")
 ```
 
+
 # Start logistic regression
 
 Outcome /dependent dichotomous variable = AKI
-calulated from estimated creatinine (KDIGO critieria - sex, weight) and baseline Cr
-(because not much AKI at 48h / aquired AKI within 48h + incomplete datasat)
+calulated from estimated creatinine and baseline Cr
+(because not much incident AKI at 48h)
 
 
 What proportion have the outcome of interest - AKI?
@@ -1829,19 +1849,35 @@ surv<-surv %>% left_join(x, by="pid")  %>%
 
 bfull<-bfull %>% left_join(surv,by="pid")
   
-bis<-bfull %>% select(dx_hypertension, hiv_test_result, bmi, bp_dia, tco2, spo2, blood, proteinuria, RI, kidneysize, qSOFA, AKI, age, sex, days_unwell, cl, hb, proteinuria, losscmd, hydronephrosis, inc_echogenicity, prior_mal, prior_mal,dx_diabetes, bun, an_gap, k, crea, died, CKD, f_time)
+bis<-bfull %>% select(dx_hypertension, dx_kidney, hiv_test_result, bmi, bp_dia, tco2, spo2, blood, proteinuria, RI, kidneysize, qSOFA, AKI, age, sex, days_unwell, cl, hb, proteinuria, losscmd, hydronephrosis, inc_echogenicity, prior_mal, prior_mal,dx_diabetes, bun, an_gap, k, crea, died, CKD, f_time)
 
 
 bis <- bis %>% 
-  mutate(old = age>=40,
-         #young = age<40,
-         bigRI = RI >0.7,
-         hiv_test_result = if_else(hiv_test_result=="positive",1,0),
+  mutate(hiv_test_result = if_else(hiv_test_result=="positive",1,0),
          AKI=if_else(AKI=="yes",1,0),
          CKD=if_else(CKD=="yes",1,0),
          f_time=as.numeric(f_time))
 
 ```
+
+
+Explore the RI association
+
+```{r}
+
+bfull %>%
+  ggplot(aes(x=AKI, y=RI, color=AKI)) + 
+  geom_boxplot() + 
+  stat_compare_means(method = "t.test")
+
+bfull %>%
+  ggplot(aes(x=AKI, y=RI, color=AKI))+
+  geom_violin() + 
+  geom_jitter() 
+```
+
+
+
 
 ```{r, results = 'hide'}
 
@@ -1852,178 +1888,170 @@ complete(imp, "long", include = FALSE, print = FALSE)
 data<-complete(imp,c(1))
 
 ```
-Log binomial regression
-
-```{r}
-set.seed(123)
-tst1<-with(imp, glm (AKI ~ age, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ age))
-pool(tst1)
-pool(tst2)
-
-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-```
+Logistic regression
 
 
 ```{r}
 set.seed(123)
 tst1<-with(imp, glm (AKI ~ dx_hypertension, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ dx_hypertension))
+
 pool(tst1)
-pool(tst2)
+
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
 ```
 
 ```{r}
 set.seed(123)
 tst1<-with(imp, glm (AKI ~ bp_dia, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ bp_dia))
+
 pool(tst1)
-pool(tst2)
+
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
 ```
 
 ```{r}
 set.seed(123)
 tst1<-with(imp, glm (AKI ~ sex, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ sex))
+
 pool(tst1)
-pool(tst2)
+
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
 ```
 
 
 ```{r}
 tst1<-with(imp, glm (AKI ~ bmi, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ bmi))
+
 pool(tst1)
-pool(tst2)
+
 
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 ```{r}
 set.seed(123)
 tst1<-with(imp, glm (AKI ~ tco2, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ tco2))
-pool(tst1)
-pool(tst2)
 
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+pool(tst1)
+
+
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 
 ```{r}
 tst1<-with(imp, glm (AKI ~ bun, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ bun))
-pool(tst1)
-pool(tst2)
 
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+pool(tst1)
+
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 ```{r}
 set.seed(123)
 tst1<-with(imp, glm (AKI ~ spo2, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ spo2))
+
 pool(tst1)
-pool(tst2)
+
 
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
 ```
 
 Microscopic Haematuria
 
 ```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ blood, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ blood))
+
 pool(tst1)
-pool(tst2)
+
 
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 Proteinuria
 
 ```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ proteinuria, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ proteinuria))
+
 pool(tst1)
-pool(tst2)
+
 
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 HIV
 
 ```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ hiv_test_result, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ hiv_test_result))
+
 pool(tst1)
-pool(tst2)
+
 
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-```
 
-```{r}
-tst1<-with(imp, glm (AKI ~ RI, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ RI))
-pool(tst1)
-pool(tst2)
-
-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 ```{r}
 set.seed(123)
+fit1<-glm(AKI ~ RI,data = data, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ RI, data = data)
+tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+
+```
+
+
+```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ kidneysize, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ kidneysize))
+
+
 pool(tst1)
-pool(tst2)
+
+
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ inc_echogenicity, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ inc_echogenicity))
+
 pool(tst1)
-pool(tst2)
+
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ hydronephrosis, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ hydronephrosis))
-pool(tst1)
-pool(tst2)
 
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+pool(tst1)
+
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ losscmd, family=binomial(logit)))
 tst2<-with(imp, logbin(AKI ~ losscmd))
 pool(tst1)
@@ -2035,14 +2063,15 @@ model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
 
 
 ```{r}
+set.seed(123)
 tst1<-with(imp, glm (AKI ~ qSOFA, family=binomial(logit)))
-tst2<-with(imp, logbin(AKI ~ qSOFA))
+
 pool(tst1)
-pool(tst2)
+
 
 summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
-model<-summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
+
+model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 
 
 ```
@@ -2057,6 +2086,7 @@ summary(pool(tst2), conf.int = TRUE, exponentiate = TRUE)
 model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 ```
 
+FINAL FULL MODEL - Figure 1c in the supplement
 
 ```{r}
 set.seed(123)
@@ -2069,191 +2099,653 @@ model<-summary(pool(tst1), conf.int = TRUE, exponentiate = TRUE)
 
 ```
 
-Plot age as a spline term unadjsuted model
+Plot age as a spline term unadjusted model
 ```{r}
 base_model<-lrm(AKI ~ rcs(age, 3), data = bis)
 pre<-Predict(base_model,age=18:90,fun = plogis)
 ggplot(pre,adj.subtitle = FALSE,ylab = 'Prob(AKI)')
+
 ```
 
-Use bootComb to obtain the 95% CI
+Simply bootstap to get the 95% CI
 
+For bootstrapping:
+All you have to do is to resample your dataset with replacement and calculate the OR for each resampled dataset, then summarise the resulting empirical distribution of ORs 
 
-Compare odds of age 40 as ref, construct 95% CIs using bootComb and probabilities with 95% CI from Pre dataframe
+ Start with the unadjusted model (age) complete case analysis using dataframe called bis
+ 
+20 versus 40 
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit base_model to bootstrapped data
+   base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==20,2])/(1-(pre[pre$age==20,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+
+```
+
+30 versus 40 
 
 ```{r}
-#age= 20 versus 40
-dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.1147732, qUpp = 0.4944884, alpha = 0.05) #p_age20
-distList<-list(dist1$r,dist2$r)
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
 
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.2626062,0.2355296))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit base_model to bootstrapped data
+   base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==30,2])/(1-(pre[pre$age==30,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
 ```
+
+50 versus 40
 
 ```{r}
-#age= 30 versus 40
-dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.1460472, qUpp = 0.3409471, alpha = 0.05) #p_age30
-distList<-list(dist1$r,dist2$r)
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
 
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.2292570,0.2355296))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit base_model to bootstrapped data
+   base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==50,2])/(1-(pre[pre$age==50,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
 ```
 
-20 versus 60
+60 versus 40
 
 ```{r}
-#age= 50 versus 40
-dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.1925026, qUpp = 0.4617904, alpha = 0.05) #p_age50
-distList<-list(dist1$r,dist2$r)
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
 
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.3114212,0.2355296))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
-```{r}
-#age= 60 versus 40
-dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.3084261, qUpp = 0.6169086, alpha = 0.05) #p_age60
-distList<-list(dist1$r,dist2$r)
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit base_model to bootstrapped data
+   base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==60,2])/(1-(pre[pre$age==60,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
 
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.4587142,0.2355296))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
 ```
-```{r}
-#age= 70 versus 40
-dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.4109872, qUpp = 0.8173938, alpha = 0.05) #p_age70
-distList<-list(dist1$r,dist2$r)
 
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.6386366,0.2355296))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
-20 versus 30
+70 versus 40
 
 ```{r}
-#age= 80 versus 40
-dist2<-getBetaFromCI(qLow = 0.1410861, qUpp = 0.3662369, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.4821604, qUpp = 0.9371289, alpha = 0.05) #p_age80
-distList<-list(dist1$r,dist2$r)
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
 
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.7883775,0.2355296))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit base_model to bootstrapped data
+   base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==70,2])/(1-(pre[pre$age==70,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
 ```
-Full Model - set values as median diastolic BP = 75, median qSOFA score =2 and HIV is positive
+
+80 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit base_model to bootstrapped data
+   base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==80,2])/(1-(pre[pre$age==80,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+Adjusted model - using complete case analysis dataset called bis
+
+20 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==20,5])/(1-(pre[pre$age==20,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+30 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==30,5])/(1-(pre[pre$age==30,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+50 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==50,5])/(1-(pre[pre$age==50,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+60 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==60,5])/(1-(pre[pre$age==60,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+70 versus 40
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==70,5])/(1-(pre[pre$age==70,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+ 80 versus 40
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample from bis
+   datBS<-bis[sample(1:nrow(bis),size=nrow(bis),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==80,5])/(1-(pre[pre$age==80,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+``` 
+
+Adjusted model - using imputed dataset called data
+
+20 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit base_model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==20,5])/(1-(pre[pre$age==20,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+30 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==30,5])/(1-(pre[pre$age==30,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+
+```
+ 50 versus 40
+ 
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==50,5])/(1-(pre[pre$age==50,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+ 60 versus 40
+ 
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==60,5])/(1-(pre[pre$age==60,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+ 
+ 70 versus 40
+ 
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==70,5])/(1-(pre[pre$age==70,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+ 
+ 80 versus 40
+ 
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit model to bootstrapped data
+  adj_model<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + qSOFA + bp_dia, data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(adj_model,age=18:90, qSOFA=2, hiv_test_result=1, bp_dia=75,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==80,5])/(1-(pre[pre$age==80,5]))) / ((pre[pre$age==40,5])/(1-(pre[pre$age==40,5])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+ 
+ Unadjusted imputed dataset called data
+ 
+20 versus 40
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit base_model to bootstrapped data
+    base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==20,2])/(1-(pre[pre$age==20,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+ 
+ 30 versus 40
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit base_model to bootstrapped data
+    base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==30,2])/(1-(pre[pre$age==30,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+``` 
+
+50 versus 40
+
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit base_model to bootstrapped data
+    base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==50,2])/(1-(pre[pre$age==50,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+60 versus 40
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit base_model to bootstrapped data
+    base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==60,2])/(1-(pre[pre$age==60,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+70 versus 40
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit base_model to bootstrapped data
+    base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==70,2])/(1-(pre[pre$age==70,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+80 versus 40
+```{r}
+set.seed(123)
+#number of boostrap replicates (1,000)
+B<-1e3
+#create empty storage container
+orBS<-rep(NA,B)
+
+for(b in 1:B){
+  #draw a boostrap sample 
+   datBS<-data[sample(1:nrow(data),size=nrow(data),replace=TRUE),]
+  #fit base_model to bootstrapped data
+    base_model<-lrm(AKI ~ rcs(age, 3), data = datBS)
+   # predict the odds for model fitted to bootstrapped data(  ## add code here to estimate the OR and save the OR for each bootstrapped dataset in orBS[b])
+   pre<-Predict(base_model,age=18:90,fun = plogis)
+#pre contains probabilities - need to get the odds   
+orBS[b]<-((pre[pre$age==80,2])/(1-(pre[pre$age==80,2]))) / ((pre[pre$age==40,2])/(1-(pre[pre$age==40,2])))
+
+}
+   
+or95CI=quantile(probs=c(0.025,0.975),orBS)
+print(orBS[b])
+print(or95CI)
+```
+
+
+probability AKI for different scenarios for the tables
 
 ```{r}
 fullmodel<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + bp_dia + qSOFA, data = bis)
-pre<-Predict(fullmodel,age=18:90, bp_dia=75, qSOFA=2,hiv_test_result=1,fun = plogis)
-ggplot(pre,adj.subtitle = FALSE,ylab = 'Prob(AKI)')
+pre<-Predict(fullmodel,age=20:80, bp_dia=80, qSOFA=3,hiv_test_result=1,fun = plogis)
 
-pre
 
 ```
-Full Model - HIV is negative, qSOFA is 1  - effect of age on prob(AKI) appears q different 
 
-```{r}
-fullmodel<-lrm(AKI ~ rcs(age, 3) + hiv_test_result + bp_dia + qSOFA, data = bis)
-pre<-Predict(fullmodel,age=18:90, bp_dia=75, qSOFA=1,hiv_test_result=0,fun = plogis)
-ggplot(pre,adj.subtitle = FALSE,ylab = 'Prob(AKI)')
-```
-Using 40 as the reference in the adjusted model
-
-```{r}
-#age= 20 versus 40
-dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.2363774, qUpp = 0.8398127, alpha = 0.05) #p_age20
-distList<-list(dist1$r,dist2$r)
-
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.5602300,0.2683258))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
-
-```{r}
-#age= 30 versus 40
-dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.2067034, qUpp = 0.5302494, alpha = 0.05) #p_age30
-distList<-list(dist1$r,dist2$r)
-
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.3516297,0.2683258))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
-
-```{r}
-#age= 50 versus 40
-dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.1992210, qUpp = 0.5254521, alpha = 0.05) #p_age50
-distList<-list(dist1$r,dist2$r)
-
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.3441991,0.2683258))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
-
-```{r}
-#age= 60 versus 40
-dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.3564298, qUpp = 0.7442750, alpha = 0.05) #p_age60
-distList<-list(dist1$r,dist2$r)
-
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.5593950,0.2683258))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
-```{r}
-#age= 70 versus 40
-dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.5091643, qUpp = 0.9350877, alpha = 0.05) #p_age70
-distList<-list(dist1$r,dist2$r)
-
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.7944780,0.2683258))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
-
-```{r}
-#age= 80 versus 40
-dist2<-getBetaFromCI(qLow = 0.1490261, qUpp = 0.4343790, alpha = 0.05) #p_age40
-dist1<-getBetaFromCI(qLow = 0.6253068, qUpp = 0.9886285, alpha = 0.05) #p_age80
-distList<-list(dist1$r,dist2$r)
-
-combFun<-function(pars){((pars[[1]])/(1-pars[[1]]))/((pars[[2]])/(1-pars[[2]]))}
-p_age<-combFun(c(0.9233437,0.2683258))
-print(p_age)
-ci<-bootComb(distList = distList,combFun = combFun)$conf.int
-print(ci)
-```
 
 Forest plot of point estimates and 95% CIs
 
@@ -2280,23 +2772,23 @@ ggplot(data = data.frame) +
 Cutsom made forest plot which extracts the relevent age categoryies
 
 ```{r}
-foresttab<-structure(list(mean = c(1.43,3.46, 10.54, 4.86, 2.94, 1.34),
-               lower = c(0.50,1.12,2.22,1.14,1.03,1.00),
-               upper = c(4.07,10.27,45.54,20.68,8.41,1.79)),
+foresttab<-structure(list(mean = c(1.7,4.53,14.17,4.87,3.1),
+               lower = c(1.13,2.24,4.38,1.38,1.09),
+               upper = c(2.53,14.66,136.57,17.13,8.84)),
           .Names = c("mean", "lower", "upper"),
-          row.names = c("50 years","60 years","70 years","HIV+","qSOFA","DBP"),
+          row.names = c("50 years","60 years","70 years","HIV+","qSOFA"),
           class = "data.frame")
 
-tabletext<-cbind(c("50 years","60 years","70 years","HIV+","qSOFA","DBP"),
-                 c("1.43","3.46", "10.54", "4.86", "2.94", "1.34"))
+tabletext<-cbind(c("50 years","60 years","70 years","HIV+","qSOFA"),
+                 c("1.70","4.53", "14.17", "4.87", "3.10"))
 
 foresttab %>%
   forestplot(labeltext = tabletext,
              is.summary = FALSE,
-             #clip = c(0,10),
+             clip = c(0,20),
              xlog = FALSE,
              zero =1,
-             xlab= "Adjsuted OR with 95% confidence interval",
+             xlab= "Adjusted OR with 95% confidence interval",
              col = fpColors(box = "royalblue",
                             line = "darkblue",
                             summary = "royalblue"))
@@ -2304,99 +2796,103 @@ foresttab %>%
 
 
 
-Complete Cases Analysis - using unimputed dataset
+Complete Cases Analysis - using unimputed dataset bis
  
- Age 
- 
+ Sex 
 ```{r}
-fit1<-glm(AKI ~ age,data = bis, family=binomial(link='logit'))
-fit2<-logbin(AKI ~ age, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
-tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
-```
-
-Sex 
-```{r}
-fit1<-glm(AKI ~ sex,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ sex,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ sex, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 HT 
  
 ```{r}
-fit1<-glm(AKI ~ dx_hypertension,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ dx_hypertension,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ dx_hypertension, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 HIV
 
 ```{r}
-fit1<-glm(AKI ~ hiv_test_result,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ hiv_test_result,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ hiv_test_result, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
-fit1<-glm(AKI ~ bmi,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ bmi,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ bmi, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
-fit1<-glm(AKI ~ bp_dia,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ bp_dia,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ bp_dia, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 fit1<-glm(AKI ~ tco2,data = bis, family=binomial(link='logit'))
-fit2<-logbin(AKI ~ tco2, data = bis)
+#fit2<-logbin(AKI ~ tco2, data = bis)
 tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
-tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+#tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 fit1<-glm(AKI ~ spo2,data = bis, family=binomial(link='logit'))
-fit2<-logbin(AKI ~ spo2, data = bis)
+#fit2<-logbin(AKI ~ spo2, data = bis)
 tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
-tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
+#tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
-fit1<-glm(AKI ~ blood,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ blood,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ blood, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
-fit1<-glm(AKI ~ proteinuria,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ proteinuria,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ proteinuria, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
-fit1<-glm(AKI ~ RI,data = bis, family=binomial(link='logit'))
-fit2<-logbin(RI ~ proteinuria, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+badgone<-bis %>% filter(!RI<0.5)
+set.seed(123)
+#fit1<-glm(AKI ~ RI, data = badgone, family=binomial(link='logit'))
+fit2<-logbin(AKI ~ RI, data = badgone)
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
-fit1<-glm(AKI ~ kidneysize,data = bis, family=binomial(link='logit'))
+set.seed(123)
+#fit1<-glm(AKI ~ kidneysize,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ kidneysize, data = bis)
-tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
+#tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
 tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 fit1<-glm(AKI ~ losscmd,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ losscmd, data = bis)
 tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
@@ -2404,6 +2900,7 @@ tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 fit1<-glm(AKI ~ inc_echogenicity,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ inc_echogenicity, data = bis)
 tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
@@ -2411,6 +2908,7 @@ tidy(fit2, exponentiate = TRUE, conf.int = TRUE)
 ```
 
 ```{r}
+set.seed(123)
 fit1<-glm(AKI ~ qSOFA,data = bis, family=binomial(link='logit'))
 fit2<-logbin(AKI ~ qSOFA, data = bis)
 tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
@@ -2422,7 +2920,6 @@ full model complete case analysis
 set.seed(123)
 fit1<-glm(AKI ~ rcs(age,3) + hiv_test_result + qSOFA + bp_dia,data = bis, family=binomial(link='logit'))
 tidy(fit1, exponentiate = TRUE, conf.int = TRUE) 
-
 
 ```
 
@@ -2445,7 +2942,7 @@ ggsurvplot(
           linetype = c("strata"),
           censor.shape = 124,
           censor.size = 2.5,
-          pval = "HR 2.84 (95% CI 1.19-6.76)", 
+          pval = "HR 3.91 (95% CI 1.06-14.48)", 
           pval.coord = c(15,0.65), pval.size = 4,
           legend.title = "",
           legend.labs = c("HIV negative","HIV positive"),
@@ -2489,7 +2986,7 @@ FINAL MODEL STRATIFIED BY AKI STATUS as PH do not hold
 
 ```{r}
 set.seed(123)
-res.cox1<-coxph(formula = Surv(f_time, died) ~ age + hiv_test_result + strata(AKI), data = data) 
+res.cox1<-coxph(formula = Surv(f_time, died) ~ age + hiv_test_result + strata(AKI) + qSOFA, data = bis) 
 summary(res.cox1)
 
 ```
